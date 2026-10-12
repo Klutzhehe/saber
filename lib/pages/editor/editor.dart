@@ -180,6 +180,79 @@ class EditorState extends State<Editor> {
   /// If we add customized button bindings, we may have to separate this again.
   var stylusButtonWasPressed = false;
 
+  /// Timer for detecting a stationary hold to enter eraser mode.
+  Timer? _holdToEraseTimer;
+
+  /// Screen focal point where the pen was held down.
+  Offset? _holdToEraseStartFocalPoint;
+
+  /// Page-local coordinate where the pen was held down.
+  Offset? _holdToEraseStartPagePosition;
+
+  /// Whether hold-to-erase mode is currently active.
+  bool _isHoldToEraseActive = false;
+
+  /// The tool that was active before hold-to-erase triggered.
+  Tool? _toolBeforeHoldToErase;
+
+  /// Maximum pointer drift (in logical pixels) allowed while holding before cancelling.
+  static const double _holdToEraseSlopDistance = 14.0;
+
+  /// Hold duration required to activate eraser mode.
+  static const Duration _holdToEraseDuration = Duration(milliseconds: 450);
+
+  void _cancelHoldToEraseTimer() {
+    _holdToEraseTimer?.cancel();
+    _holdToEraseTimer = null;
+    _holdToEraseStartFocalPoint = null;
+    _holdToEraseStartPagePosition = null;
+  }
+
+  void _startHoldToEraseTimer(Offset focalPoint, Offset pagePosition) {
+    _cancelHoldToEraseTimer();
+    _holdToEraseStartFocalPoint = focalPoint;
+    _holdToEraseStartPagePosition = pagePosition;
+
+    _holdToEraseTimer = Timer(_holdToEraseDuration, _triggerHoldToErase);
+  }
+
+  void _triggerHoldToErase() {
+    if (!mounted || dragPageIndex == null) return;
+    if (_isHoldToEraseActive) return;
+
+    _isHoldToEraseActive = true;
+    _toolBeforeHoldToErase = currentTool;
+
+    // Discard any stroke that started forming while holding still
+    Pen.currentStroke = null;
+    ShapePen.detectedShape = null;
+
+    // Switch tool to Eraser
+    currentTool = Eraser();
+
+    // Tactile feedback for switching to eraser mode
+    HapticFeedback.mediumImpact();
+
+    // Erase any stroke immediately under the held pen position
+    if (dragPageIndex! < coreInfo.pages.length) {
+      final page = coreInfo.pages[dragPageIndex!];
+      final pos = _holdToEraseStartPagePosition ?? previousPosition;
+      final overlapping = (currentTool as Eraser).checkForOverlappingStrokes(
+        pos,
+        page.strokes,
+      );
+      if (overlapping.isNotEmpty) {
+        for (final stroke in overlapping) {
+          page.strokes.remove(stroke);
+        }
+        removeExcessPages();
+      }
+      page.redrawStrokes();
+    }
+
+    setState(() {});
+  }
+
   @override
   void initState() {
     DynamicMaterialApp.addFullscreenListener(_setState);
@@ -523,9 +596,11 @@ class EditorState extends State<Editor> {
     if (lastSeenPointerCount >= 2) {
       // was a zoom gesture, ignore
       lastSeenPointerCount = lastSeenPointerCount;
+      _cancelHoldToEraseTimer();
       return false;
     } else if (details.pointerCount >= 2) {
       // is a zoom gesture, remove accidental stroke
+      _cancelHoldToEraseTimer();
       if (lastSeenPointerCount == 1 &&
           stows.editorFingerDrawing.value &&
           (currentTool is Pen || currentTool is Eraser)) {
@@ -556,9 +631,19 @@ class EditorState extends State<Editor> {
   }
 
   void onDrawStart(ScaleStartDetails details) {
+    _cancelHoldToEraseTimer();
+    _isHoldToEraseActive = false;
+    _toolBeforeHoldToErase = null;
+
     final page = coreInfo.pages[dragPageIndex!];
     final position = page.renderBox!.globalToLocal(details.focalPoint);
     history.canRedo = false;
+
+    if (stows.holdToErase.value &&
+        currentTool is! Eraser &&
+        currentTool is! Select) {
+      _startHoldToEraseTimer(details.focalPoint, position);
+    }
 
     if (currentTool is Pen) {
       (currentTool as Pen).onDragStart(
@@ -601,6 +686,14 @@ class EditorState extends State<Editor> {
   }
 
   void onDrawUpdate(ScaleUpdateDetails details) {
+    if (_holdToEraseTimer != null && _holdToEraseStartFocalPoint != null) {
+      final distance =
+          (details.focalPoint - _holdToEraseStartFocalPoint!).distance;
+      if (distance > _holdToEraseSlopDistance) {
+        _cancelHoldToEraseTimer();
+      }
+    }
+
     final page = coreInfo.pages[dragPageIndex!];
     final position = page.renderBox!.globalToLocal(details.focalPoint);
     final offset = position - previousPosition;
@@ -640,6 +733,8 @@ class EditorState extends State<Editor> {
   }
 
   void onDrawEnd(ScaleEndDetails details) {
+    _cancelHoldToEraseTimer();
+
     final page = coreInfo.pages[dragPageIndex!];
     bool shouldSave = true;
     setState(() {
@@ -666,10 +761,17 @@ class EditorState extends State<Editor> {
         );
       } else if (currentTool is Eraser) {
         final erased = (currentTool as Eraser).onDragEnd();
-        if (stylusButtonWasPressed || stows.disableEraserAfterUse.value) {
+        final wasHoldToErase = _isHoldToEraseActive;
+        final restoreTool = _toolBeforeHoldToErase ?? _lastNonEraserTool;
+
+        if (stylusButtonWasPressed ||
+            stows.disableEraserAfterUse.value ||
+            wasHoldToErase) {
           // restore previous tool
           stylusButtonWasPressed = false;
-          currentTool = _lastNonEraserTool;
+          _isHoldToEraseActive = false;
+          _toolBeforeHoldToErase = null;
+          currentTool = restoreTool;
         }
         if (erased.isEmpty) return;
         history.recordChange(
@@ -722,6 +824,14 @@ class EditorState extends State<Editor> {
   }
 
   void onInteractionEnd(ScaleEndDetails details) {
+    _cancelHoldToEraseTimer();
+    if (_isHoldToEraseActive) {
+      _isHoldToEraseActive = false;
+      if (currentTool is Eraser && _toolBeforeHoldToErase != null) {
+        currentTool = _toolBeforeHoldToErase!;
+        _toolBeforeHoldToErase = null;
+      }
+    }
     // reset after 1ms to keep track of the same gesture only
     _lastSeenPointerCountTimer?.cancel();
     _lastSeenPointerCountTimer = Timer(const Duration(milliseconds: 10), () {
@@ -2067,6 +2177,7 @@ class EditorState extends State<Editor> {
     _delayedSaveTimer?.cancel();
     _watchServerTimer?.cancel();
     _lastSeenPointerCountTimer?.cancel();
+    _cancelHoldToEraseTimer();
 
     _removeKeybindings();
 

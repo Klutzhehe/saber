@@ -366,6 +366,13 @@ class _SettingsPageState extends State<SettingsPage> {
                   icon: FontAwesomeIcons.eraser,
                   pref: stows.disableEraserAfterUse,
                 ),
+                SettingsSwitch(
+                  title: 'Hold pen to erase',
+                  subtitle:
+                      'Holding the pen still temporarily switches to the eraser until lifted',
+                  icon: FontAwesomeIcons.eraser,
+                  pref: stows.holdToErase,
+                ),
                 ValueListenableBuilder(
                   valueListenable: stows.hideFingerDrawingToggle,
                   builder: (context, _, _) {
