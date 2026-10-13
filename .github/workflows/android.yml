@@ -86,7 +86,10 @@ jobs:
         if: matrix.foss
 
       - name: Build apk
-        run: flutter build apk
+        run: |
+          BUILD_NUM=$((136010 + ${{ github.run_number }}))
+          echo "Building with build number: $BUILD_NUM"
+          flutter build apk --build-number=$BUILD_NUM
 
       - name: Rename apk
         id: rename_apk
