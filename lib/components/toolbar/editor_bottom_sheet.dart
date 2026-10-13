@@ -31,6 +31,7 @@ class EditorBottomSheet extends StatefulWidget {
     required this.canRasterPdf,
     required this.getIsWatchingServer,
     required this.setIsWatchingServer,
+    this.insertTable,
   });
 
   final bool invert;
@@ -49,6 +50,7 @@ class EditorBottomSheet extends StatefulWidget {
   final bool canRasterPdf;
   final bool Function() getIsWatchingServer;
   final void Function(bool) setIsWatchingServer;
+  final VoidCallback? insertTable;
 
   @override
   State<EditorBottomSheet> createState() => _EditorBottomSheetState();
@@ -313,6 +315,20 @@ class _EditorBottomSheetState extends State<EditorBottomSheet> {
                       }
                     },
                     child: const Text('PDF'),
+                  ),
+                if (widget.insertTable != null)
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      widget.insertTable!();
+                    },
+                    child: const Wrap(
+                      children: [
+                        Icon(Icons.table_chart, size: 18),
+                        SizedBox(width: 8),
+                        Text('Table'),
+                      ],
+                    ),
                   ),
               ],
             ),

@@ -13,8 +13,11 @@ import 'package:flutter_quill/flutter_quill.dart' as flutter_quill;
 import 'package:keybinder/keybinder.dart';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
+import 'package:one_dollar_unistroke_recognizer/one_dollar_unistroke_recognizer.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:saber/components/canvas/_asset_cache.dart';
+import 'package:saber/components/canvas/_circle_stroke.dart';
+import 'package:saber/components/canvas/_rectangle_stroke.dart';
 import 'package:saber/components/canvas/_stroke.dart';
 import 'package:saber/components/canvas/canvas.dart';
 import 'package:saber/components/canvas/canvas_gesture_detector.dart';
@@ -199,7 +202,8 @@ class EditorState extends State<Editor> {
   static const double _holdToEraseSlopDistance = 14.0;
 
   /// Hold duration required to activate eraser mode.
-  static const Duration _holdToEraseDuration = Duration(milliseconds: 450);
+  Duration get _holdToEraseDuration =>
+      Duration(milliseconds: stows.holdToEraseDelay.value);
 
   void _cancelHoldToEraseTimer() {
     _holdToEraseTimer?.cancel();
@@ -739,14 +743,42 @@ class EditorState extends State<Editor> {
     bool shouldSave = true;
     setState(() {
       if (currentTool is Pen) {
-        final newStroke = (currentTool as Pen).onDragEnd();
+        var newStroke = (currentTool as Pen).onDragEnd();
         if (newStroke == null) return;
         if (newStroke.isEmpty) return;
 
-        if (stows.autoStraightenLines.value &&
-            currentTool is! ShapePen &&
-            newStroke.isStraightLine()) {
-          newStroke.convertToLine();
+        if (currentTool is! ShapePen) {
+          if (stows.autoStraightenLines.value && newStroke.isStraightLine()) {
+            newStroke.convertToLine();
+          } else if (stows.autoDetectShapes.value) {
+            final detected = newStroke.detectShape();
+            if (detected != null && detected.score >= 0.65) {
+              if (detected.name == DefaultUnistrokeNames.rectangle) {
+                final rect = detected.convertToRect();
+                newStroke = RectangleStroke(
+                  color: (currentTool as Pen).color,
+                  pressureEnabled: (currentTool as Pen).pressureEnabled,
+                  options: newStroke.options,
+                  pageIndex: newStroke.pageIndex,
+                  page: newStroke.page,
+                  toolId: newStroke.toolId,
+                  rect: rect,
+                );
+              } else if (detected.name == DefaultUnistrokeNames.circle) {
+                final (center, radius) = detected.convertToCircle();
+                newStroke = CircleStroke(
+                  color: (currentTool as Pen).color,
+                  pressureEnabled: (currentTool as Pen).pressureEnabled,
+                  options: newStroke.options,
+                  pageIndex: newStroke.pageIndex,
+                  page: newStroke.page,
+                  toolId: newStroke.toolId,
+                  radius: radius,
+                  center: center,
+                );
+              }
+            }
+          }
         }
 
         createPage(newStroke.pageIndex);
@@ -1252,6 +1284,198 @@ class EditorState extends State<Editor> {
     return images.length;
   }
 
+  void showInsertTableDialog() {
+    int rows = 3;
+    int cols = 3;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Row(
+                children: [
+                  Icon(Icons.table_chart, size: 24),
+                  SizedBox(width: 8),
+                  Text('Insert Table'),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Rows:'),
+                      Row(
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.remove_circle_outline),
+                            onPressed: rows > 1
+                                ? () => setDialogState(() => rows--)
+                                : null,
+                          ),
+                          Text(
+                            '$rows',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.add_circle_outline),
+                            onPressed: rows < 20
+                                ? () => setDialogState(() => rows++)
+                                : null,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Columns:'),
+                      Row(
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.remove_circle_outline),
+                            onPressed: cols > 1
+                                ? () => setDialogState(() => cols--)
+                                : null,
+                          ),
+                          Text(
+                            '$cols',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.add_circle_outline),
+                            onPressed: cols < 20
+                                ? () => setDialogState(() => cols++)
+                                : null,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                    insertTable(rows: rows, cols: cols);
+                  },
+                  child: const Text('Insert'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void insertTable({required int rows, required int cols}) {
+    if (coreInfo.readOnly) return;
+    if (coreInfo.pages.isEmpty) createPage(0);
+
+    final targetPageIndex =
+        currentPageIndex.clamp(0, coreInfo.pages.length - 1);
+    final page = coreInfo.pages[targetPageIndex];
+
+    final double pageWidth = page.size.width;
+    final double pageHeight = page.size.height;
+
+    final double tableWidth = min(pageWidth * 0.85, 650.0);
+    final double cellHeight = 55.0;
+    final double tableHeight = cellHeight * rows;
+    final double left = (pageWidth - tableWidth) / 2;
+    final double top = (pageHeight - tableHeight) / 3;
+
+    final tableRect = Rect.fromLTWH(left, top, tableWidth, tableHeight);
+
+    final color =
+        currentTool is Pen ? (currentTool as Pen).color : Colors.black;
+    final strokeOptions = StrokeOptions(size: 2.5);
+
+    final List<Stroke> strokes = [];
+
+    // Outer rectangle border
+    strokes.add(
+      RectangleStroke(
+        color: color,
+        pressureEnabled: false,
+        options: strokeOptions.copyWith(isComplete: true),
+        pageIndex: targetPageIndex,
+        page: page,
+        toolId: ToolId.shapePen,
+        rect: tableRect,
+      ),
+    );
+
+    final double cellWidth = tableWidth / cols;
+
+    // Horizontal dividers
+    for (int r = 1; r < rows; r++) {
+      final y = top + r * cellHeight;
+      final divider = Stroke(
+        color: color,
+        pressureEnabled: false,
+        options: strokeOptions.copyWith(isComplete: true),
+        pageIndex: targetPageIndex,
+        page: page,
+        toolId: ToolId.ballpointPen,
+      );
+      divider.addPoint(Offset(left, y));
+      divider.addPoint(Offset(left + tableWidth, y));
+      divider.addPoint(Offset(left + tableWidth, y));
+      divider.markPolygonNeedsUpdating();
+      strokes.add(divider);
+    }
+
+    // Vertical dividers
+    for (int c = 1; c < cols; c++) {
+      final x = left + c * cellWidth;
+      final divider = Stroke(
+        color: color,
+        pressureEnabled: false,
+        options: strokeOptions.copyWith(isComplete: true),
+        pageIndex: targetPageIndex,
+        page: page,
+        toolId: ToolId.ballpointPen,
+      );
+      divider.addPoint(Offset(x, top));
+      divider.addPoint(Offset(x, top + tableHeight));
+      divider.addPoint(Offset(x, top + tableHeight));
+      divider.markPolygonNeedsUpdating();
+      strokes.add(divider);
+    }
+
+    page.strokes.addAll(strokes);
+    history.recordChange(
+      EditorHistoryItem(
+        type: .draw,
+        pageIndex: targetPageIndex,
+        strokes: strokes,
+        images: [],
+      ),
+    );
+
+    page.redrawStrokes();
+    autosaveAfterDelay();
+    setState(() {});
+  }
+
   Future<List<_PhotoInfo>> _pickPhotosWithFilePicker() async {
     final List<PlatformFile> files = await FilePicker.pickFiles(
       type: FileType.custom,
@@ -1688,6 +1912,7 @@ class EditorState extends State<Editor> {
             lastSeenPointerCount = 0;
           },
           pickPhoto: _pickPhotos,
+          insertTable: showInsertTableDialog,
           paste: paste,
           exportAsSba: exportAsSba,
           exportAsPdf: exportAsPdf,
@@ -1933,6 +2158,7 @@ class EditorState extends State<Editor> {
           }
         }
       },
+      insertTable: showInsertTableDialog,
     );
   }
 

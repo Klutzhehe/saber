@@ -374,6 +374,26 @@ class _SettingsPageState extends State<SettingsPage> {
                   pref: stows.holdToErase,
                 ),
                 ValueListenableBuilder(
+                  valueListenable: stows.holdToErase,
+                  builder: (context, enabled, _) {
+                    if (!enabled) return const SizedBox.shrink();
+                    return SettingsDropdown<int>(
+                      title: 'Hold to erase delay',
+                      subtitle:
+                          'How long to hold still before switching to eraser',
+                      icon: Icons.timer_outlined,
+                      pref: stows.holdToEraseDelay,
+                      options: const [
+                        ToggleButtonsOption(250, Text('0.25s (Fast)')),
+                        ToggleButtonsOption(350, Text('0.35s')),
+                        ToggleButtonsOption(450, Text('0.45s (Default)')),
+                        ToggleButtonsOption(600, Text('0.6s (Slow)')),
+                        ToggleButtonsOption(800, Text('0.8s (Very slow)')),
+                      ],
+                    );
+                  },
+                ),
+                ValueListenableBuilder(
                   valueListenable: stows.hideFingerDrawingToggle,
                   builder: (context, _, _) {
                     return SettingsSwitch(
@@ -552,6 +572,13 @@ class _SettingsPageState extends State<SettingsPage> {
                   subtitle: t.settings.prefDescriptions.autoStraightenLines,
                   icon: Icons.straighten,
                   pref: stows.autoStraightenLines,
+                ),
+                SettingsSwitch(
+                  title: 'Auto detect shapes',
+                  subtitle:
+                      'Automatically converts drawn rectangles and circles into geometric shapes',
+                  icon: FontAwesomeIcons.shapes,
+                  pref: stows.autoDetectShapes,
                 ),
                 SettingsSubtitle(subtitle: t.settings.prefCategories.advanced),
                 if (isSentryAvailable) const SettingsSentryConsent(),

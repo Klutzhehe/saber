@@ -171,6 +171,11 @@ class Stows {
     true,
     volatile: !_isOnMainIsolate,
   );
+  final autoDetectShapes = PlainStow(
+    'autoDetectShapes',
+    true,
+    volatile: !_isOnMainIsolate,
+  );
 
   final printPageIndicators = PlainStow(
     'printPageIndicators',
@@ -198,6 +203,11 @@ class Stows {
   final holdToErase = PlainStow(
     'holdToErase',
     true,
+    volatile: !_isOnMainIsolate,
+  );
+  final holdToEraseDelay = PlainStow<int>(
+    'holdToEraseDelay',
+    450,
     volatile: !_isOnMainIsolate,
   );
   final hideFingerDrawingToggle = PlainStow(

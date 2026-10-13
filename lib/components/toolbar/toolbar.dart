@@ -45,6 +45,7 @@ class Toolbar extends StatefulWidget {
     required this.isRedoPossible,
     required this.toggleFingerDrawing,
     required this.pickPhoto,
+    required this.insertTable,
     required this.paste,
     required this.duplicateSelection,
     required this.deleteSelection,
@@ -71,6 +72,7 @@ class Toolbar extends StatefulWidget {
   final VoidCallback toggleFingerDrawing;
 
   final VoidCallback pickPhoto;
+  final VoidCallback insertTable;
 
   final VoidCallback paste;
 
@@ -465,6 +467,13 @@ class _ToolbarState extends State<Toolbar> {
                   icon: Icons.photo,
                   cupertinoIcon: CupertinoIcons.photo,
                 ),
+              ),
+              ToolbarIconButton(
+                tooltip: 'Insert Table',
+                enabled: !widget.readOnly,
+                onPressed: widget.insertTable,
+                padding: buttonPadding,
+                child: const Icon(Icons.table_chart, size: 18),
               ),
               ToolbarIconButton(
                 tooltip: t.editor.toolbar.text,
