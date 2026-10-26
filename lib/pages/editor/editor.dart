@@ -186,8 +186,14 @@ class EditorState extends State<Editor> {
   /// Timer for detecting a stationary hold to enter eraser mode.
   Timer? _holdToEraseTimer;
 
-  /// Screen focal point where the pen was held down.
+  /// Screen focal point where the pen was held down (in screen logical pixels).
   Offset? _holdToEraseStartFocalPoint;
+
+  /// Last observed focal point on the screen (in screen logical pixels).
+  Offset? _holdToEraseLastFocalPoint;
+
+  /// Total accumulated distance drawn on screen (in screen logical pixels) during the hold check.
+  double _holdToEraseDrawnLength = 0.0;
 
   /// Page-local coordinate where the pen was held down.
   Offset? _holdToEraseStartPagePosition;
@@ -198,8 +204,13 @@ class EditorState extends State<Editor> {
   /// The tool that was active before hold-to-erase triggered.
   Tool? _toolBeforeHoldToErase;
 
-  /// Maximum pointer drift (in logical pixels) allowed while holding before cancelling.
-  static const double _holdToEraseSlopDistance = 14.0;
+  /// Maximum accumulated drawn length (in screen logical pixels) allowed before cancelling hold-to-erase.
+  /// If the user is writing letters (even small ones that don't lift up), the cumulative path length
+  /// exceeds this threshold almost immediately, preventing accidental eraser activation.
+  static const double _holdToEraseMaxDrawnLength = 10.0;
+
+  /// Maximum displacement from initial touch point (in screen logical pixels) allowed while holding before cancelling.
+  static const double _holdToEraseSlopDistance = 10.0;
 
   /// Hold duration required to activate eraser mode.
   Duration get _holdToEraseDuration =>
@@ -209,12 +220,16 @@ class EditorState extends State<Editor> {
     _holdToEraseTimer?.cancel();
     _holdToEraseTimer = null;
     _holdToEraseStartFocalPoint = null;
+    _holdToEraseLastFocalPoint = null;
+    _holdToEraseDrawnLength = 0.0;
     _holdToEraseStartPagePosition = null;
   }
 
   void _startHoldToEraseTimer(Offset focalPoint, Offset pagePosition) {
     _cancelHoldToEraseTimer();
     _holdToEraseStartFocalPoint = focalPoint;
+    _holdToEraseLastFocalPoint = focalPoint;
+    _holdToEraseDrawnLength = 0.0;
     _holdToEraseStartPagePosition = pagePosition;
 
     _holdToEraseTimer = Timer(_holdToEraseDuration, _triggerHoldToErase);
@@ -226,6 +241,7 @@ class EditorState extends State<Editor> {
 
     _isHoldToEraseActive = true;
     _toolBeforeHoldToErase = currentTool;
+    _holdToEraseTimer = null;
 
     // Discard any stroke that started forming while holding still
     Pen.currentStroke = null;
@@ -691,9 +707,21 @@ class EditorState extends State<Editor> {
 
   void onDrawUpdate(ScaleUpdateDetails details) {
     if (_holdToEraseTimer != null && _holdToEraseStartFocalPoint != null) {
-      final distance =
-          (details.focalPoint - _holdToEraseStartFocalPoint!).distance;
-      if (distance > _holdToEraseSlopDistance) {
+      final currentFocalPoint = details.focalPoint;
+      final stepDistance = _holdToEraseLastFocalPoint != null
+          ? (currentFocalPoint - _holdToEraseLastFocalPoint!).distance
+          : 0.0;
+      _holdToEraseLastFocalPoint = currentFocalPoint;
+      _holdToEraseDrawnLength += stepDistance;
+
+      final displacementFromStart =
+          (currentFocalPoint - _holdToEraseStartFocalPoint!).distance;
+
+      // Range is screen-pixel based (independent of zoom level):
+      // If the accumulated drawn length exceeds the threshold or pointer drifts from start,
+      // cancel hold-to-erase immediately (e.g. user writing continuous letters without lifting).
+      if (_holdToEraseDrawnLength > _holdToEraseMaxDrawnLength ||
+          displacementFromStart > _holdToEraseSlopDistance) {
         _cancelHoldToEraseTimer();
       }
     }

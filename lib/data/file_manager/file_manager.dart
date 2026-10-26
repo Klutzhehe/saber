@@ -88,60 +88,94 @@ class FileManager {
     if (oldDir.path == newDir.path) return;
     log.info('Migrating data directory from $oldDir to $newDir');
 
-    late final oldDirEmpty = oldDir.existsSync()
-        ? oldDir.listSync().isEmpty
-        : true;
-    late final newDirEmpty = newDir.existsSync()
-        ? newDir.listSync().isEmpty
-        : true;
-
-    if (!oldDirEmpty && !newDirEmpty) {
-      log.severe('New and old data directory aren\'t empty, can\'t migrate');
-      return;
+    bool isDirEmpty(Directory dir) {
+      try {
+        if (!dir.existsSync()) return true;
+        return dir.listSync().isEmpty;
+      } catch (e) {
+        return false;
+      }
     }
 
+    final oldDirEmpty = isDirEmpty(oldDir);
     documentsDirectory = newDir.path;
-    if (oldDirEmpty) {
-      log.fine('Old data directory is empty or missing, nothing to migrate');
-    } else {
-      await moveDirContents(oldDir: oldDir, newDir: newDir);
-      await oldDir.delete(recursive: true);
+
+    try {
+      if (!newDir.existsSync()) {
+        await newDir.create(recursive: true);
+      }
+    } catch (e) {
+      log.warning('Could not create new data directory $newDir: $e');
     }
+
+    if (!oldDirEmpty) {
+      await moveDirContents(oldDir: oldDir, newDir: newDir);
+      try {
+        if (isDirEmpty(oldDir)) {
+          await oldDir.delete(recursive: true);
+        }
+      } catch (e) {
+        log.warning('Could not delete old directory $oldDir: $e');
+      }
+    } else {
+      log.fine('Old data directory is empty or missing, nothing to migrate');
+    }
+
+    try {
+      unawaited(watchRootDirectory());
+    } catch (e) {
+      log.warning('Could not watch new root directory: $e');
+    }
+
+    broadcastFileWrite(FileOperationType.write, '/');
   }
 
   static Future<void> moveDirContents({
     required Directory oldDir,
     required Directory newDir,
   }) async {
-    await newDir.create(recursive: true);
+    try {
+      await newDir.create(recursive: true);
+    } catch (e) {
+      log.warning('Could not create new directory: $e');
+    }
 
-    await for (final entity in oldDir.list(recursive: true)) {
-      // Get the path under oldDir and map it into newDir.
-      final relative = p.relative(entity.path, from: oldDir.path);
-      final targetPath = p.join(newDir.path, relative);
-
-      if (entity is Directory) {
-        await Directory(targetPath).create(recursive: true);
-        continue;
-      }
-
-      if (entity is File) {
-        // Ensure parent exists
-        await entity.parent.create(recursive: true);
-
+    try {
+      await for (final entity in oldDir.list(recursive: true)) {
         try {
-          await entity.rename(targetPath);
-        } on FileSystemException catch (e) {
-          // Cross device move, eg. private to public on android
-          const exdev = 18;
-          if (e.osError?.errorCode == exdev) {
-            await entity.copy(targetPath);
-            await entity.delete();
-          } else {
-            rethrow;
+          // Get the path under oldDir and map it into newDir.
+          final relative = p.relative(entity.path, from: oldDir.path);
+          final targetPath = p.join(newDir.path, relative);
+
+          if (entity is Directory) {
+            await Directory(targetPath).create(recursive: true);
+            continue;
           }
+
+          if (entity is File) {
+            final targetFile = File(targetPath);
+            if (!targetFile.existsSync()) {
+              await targetFile.parent.create(recursive: true);
+              try {
+                await entity.rename(targetPath);
+              } on FileSystemException catch (e) {
+                // Cross device move, eg. private to public on android
+                const exdev = 18;
+                if (e.osError?.errorCode == exdev) {
+                  await entity.copy(targetPath);
+                  await entity.delete();
+                } else {
+                  await entity.copy(targetPath);
+                }
+              }
+            }
+          }
+        } catch (e) {
+          log.warning('Failed to move entity ${entity.path}: $e');
         }
       }
+    } catch (e) {
+      log.warning('Failed to list old directory contents: $e');
     }
   }
 
@@ -359,6 +393,29 @@ class FileManager {
       return await Permission.photos.request().isGranted;
     } else {
       return await Permission.storage.request().isGranted;
+    }
+  }
+
+  static Future<bool> requestStoragePermission() async {
+    if (!Platform.isAndroid) return true;
+    try {
+      final androidInfo = await DeviceInfoPlugin().androidInfo;
+      if (androidInfo.version.sdkInt >= 30) {
+        var status = await Permission.manageExternalStorage.status;
+        if (!status.isGranted) {
+          status = await Permission.manageExternalStorage.request();
+        }
+        return status.isGranted;
+      } else {
+        var status = await Permission.storage.status;
+        if (!status.isGranted) {
+          status = await Permission.storage.request();
+        }
+        return status.isGranted;
+      }
+    } catch (e) {
+      log.warning('Failed to request storage permission: $e');
+      return false;
     }
   }
 

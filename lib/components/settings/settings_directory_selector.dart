@@ -19,7 +19,7 @@ class SettingsDirectorySelector extends StatelessWidget {
     required this.title,
     required this.icon,
     this.afterChange,
-    this.isUnsupported = true,
+    this.isUnsupported = false,
   });
 
   final String title;
@@ -28,16 +28,16 @@ class SettingsDirectorySelector extends StatelessWidget {
   final bool isUnsupported;
 
   void onPressed(BuildContext context) async {
-    final oldDir = Directory(FileManager.documentsDirectory);
-    final oldDirIsEmpty = oldDir.existsSync()
-        ? oldDir.listSync().isEmpty
-        : true;
+    if (Platform.isAndroid) {
+      await FileManager.requestStoragePermission();
+    }
+    if (!context.mounted) return;
     await showAdaptiveDialog(
       context: context,
       builder: (context) => DirectorySelector(
         title: title,
         initialDirectory: FileManager.documentsDirectory,
-        mustBeEmpty: !oldDirIsEmpty,
+        mustBeEmpty: false,
       ),
     );
   }
@@ -79,7 +79,7 @@ class DirectorySelector extends StatefulWidget {
     super.key,
     required this.title,
     required this.initialDirectory,
-    this.mustBeEmpty = true,
+    this.mustBeEmpty = false,
     this.mustBeDoneSyncing = true,
   });
 
@@ -97,26 +97,44 @@ class _DirectorySelectorState extends State<DirectorySelector> {
   late var _isEmpty = true;
 
   Future<void> _pickDir() async {
-    final directory = await FilePicker.getDirectoryPath(
-      dialogTitle: widget.title,
-      initialDirectory: _directory,
-      androidOptions: defaultTargetPlatform == .android
-          ? const FilePickerAndroidOptions(
-              safOptions: .new(
-                grant: .lifetime,
-                accessMode: .readWrite,
-                persistGrant: true,
-              ),
-            )
-          : const .new(),
-    );
+    if (Platform.isAndroid) {
+      await FileManager.requestStoragePermission();
+    }
+
+    String? directory;
+    try {
+      directory = await FilePicker.getDirectoryPath(
+        dialogTitle: widget.title,
+        initialDirectory: _directory,
+        androidOptions: defaultTargetPlatform == .android
+            ? const FilePickerAndroidOptions(
+                safOptions: .new(
+                  grant: .lifetime,
+                  accessMode: .readWrite,
+                  persistGrant: true,
+                ),
+              )
+            : const .new(),
+      );
+    } catch (_) {
+      try {
+        directory = await FilePicker.getDirectoryPath(
+          dialogTitle: widget.title,
+          initialDirectory: _directory,
+        );
+      } catch (_) {}
+    }
 
     if (directory == null) return;
     if (directory == _directory) return;
 
     final dir = Directory(directory);
     _directory = directory;
-    _isEmpty = dir.existsSync() ? dir.listSync().isEmpty : true;
+    try {
+      _isEmpty = dir.existsSync() ? dir.listSync().isEmpty : true;
+    } catch (_) {
+      _isEmpty = false;
+    }
 
     if (!mounted) return;
 
@@ -128,15 +146,26 @@ class _DirectorySelectorState extends State<DirectorySelector> {
 
     final dir = Directory(directory);
     _directory = directory;
-    _isEmpty = dir.existsSync() ? dir.listSync().isEmpty : true;
+    try {
+      _isEmpty = dir.existsSync() ? dir.listSync().isEmpty : true;
+    } catch (_) {
+      _isEmpty = true;
+    }
 
     if (!mounted) return;
     setState(() {});
   }
 
-  void _onConfirm() {
-    stows.customDataDir.value = _directory;
-    context.pop();
+  Future<void> _onConfirm() async {
+    final defaultDir = await FileManager.getDefaultDocumentsDirectory();
+    if (_directory == defaultDir) {
+      stows.customDataDir.value = null;
+    } else {
+      stows.customDataDir.value = _directory;
+    }
+    if (mounted) {
+      context.pop();
+    }
   }
 
   @override
@@ -154,10 +183,6 @@ class _DirectorySelectorState extends State<DirectorySelector> {
       content: Column(
         mainAxisSize: .min,
         children: [
-          Text(
-            t.settings.customDataDir.unsupported,
-            style: TextStyle(color: colorScheme.error),
-          ),
           Row(
             children: [
               Expanded(

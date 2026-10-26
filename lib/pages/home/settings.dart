@@ -582,11 +582,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 SettingsSubtitle(subtitle: t.settings.prefCategories.advanced),
                 if (isSentryAvailable) const SettingsSentryConsent(),
-                if (Platform.isAndroid)
-                  SettingsDirectorySelector(
-                    title: t.settings.prefLabels.customDataDir,
-                    icon: Icons.folder,
-                  ),
+                SettingsDirectorySelector(
+                  title: t.settings.prefLabels.customDataDir,
+                  icon: Icons.folder,
+                ),
                 if (Platform.isWindows || Platform.isLinux || Platform.isMacOS)
                   SettingsButton(
                     title: t.settings.openDataDir,
