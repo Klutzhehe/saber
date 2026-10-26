@@ -803,7 +803,7 @@ class EditorState extends State<Editor> {
     } else if (currentTool is LineTool) {
       final lineTool = currentTool as LineTool;
       lineTool.color = Pen.currentPen.color;
-      lineTool.strokeWidth = Pen.currentPen.strokeWidth;
+      lineTool.strokeWidth = Pen.currentPen.options.size;
       lineTool.activePageIndex = dragPageIndex!;
       final snapped = lineTool.snapPoint(position, page.strokes);
 
@@ -1149,7 +1149,7 @@ class EditorState extends State<Editor> {
 
     final strokeColor = Pen.currentPen.color;
     final strokeOptions = StrokeOptions(
-      size: Pen.currentPen.strokeWidth,
+      size: Pen.currentPen.options.size,
       isComplete: true,
       smoothing: 0,
       streamline: 0,
