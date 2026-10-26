@@ -36,7 +36,9 @@ class SettingsDirectorySelector extends StatelessWidget {
       context: context,
       builder: (context) => DirectorySelector(
         title: title,
-        initialDirectory: FileManager.documentsDirectory,
+        initialDirectory: FileManager.sanitiseDirectoryPath(
+          FileManager.documentsDirectory,
+        ),
         mustBeEmpty: false,
       ),
     );
@@ -93,8 +95,25 @@ class DirectorySelector extends StatefulWidget {
 }
 
 class _DirectorySelectorState extends State<DirectorySelector> {
-  late String _directory = widget.initialDirectory;
+  late String _directory = FileManager.sanitiseDirectoryPath(
+    widget.initialDirectory,
+  );
   late var _isEmpty = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkEmpty();
+  }
+
+  void _checkEmpty() {
+    final dir = Directory(_directory);
+    try {
+      _isEmpty = dir.existsSync() ? dir.listSync().isEmpty : true;
+    } catch (_) {
+      _isEmpty = true;
+    }
+  }
 
   Future<void> _pickDir() async {
     if (Platform.isAndroid) {
@@ -126,14 +145,18 @@ class _DirectorySelectorState extends State<DirectorySelector> {
     }
 
     if (directory == null) return;
-    if (directory == _directory) return;
+    final resolvedDirectory = FileManager.sanitiseDirectoryPath(directory);
+    if (resolvedDirectory == _directory) return;
 
-    final dir = Directory(directory);
-    _directory = directory;
+    final dir = Directory(resolvedDirectory);
+    _directory = resolvedDirectory;
     try {
-      _isEmpty = dir.existsSync() ? dir.listSync().isEmpty : true;
+      if (!dir.existsSync()) {
+        await dir.create(recursive: true);
+      }
+      _isEmpty = dir.listSync().isEmpty;
     } catch (_) {
-      _isEmpty = false;
+      _isEmpty = true;
     }
 
     if (!mounted) return;
@@ -142,12 +165,17 @@ class _DirectorySelectorState extends State<DirectorySelector> {
   }
 
   Future<void> _pickDefaultDir() async {
-    final directory = await FileManager.getDefaultDocumentsDirectory();
+    final directory = FileManager.sanitiseDirectoryPath(
+      await FileManager.getDefaultDocumentsDirectory(),
+    );
 
     final dir = Directory(directory);
     _directory = directory;
     try {
-      _isEmpty = dir.existsSync() ? dir.listSync().isEmpty : true;
+      if (!dir.existsSync()) {
+        await dir.create(recursive: true);
+      }
+      _isEmpty = dir.listSync().isEmpty;
     } catch (_) {
       _isEmpty = true;
     }
@@ -157,11 +185,14 @@ class _DirectorySelectorState extends State<DirectorySelector> {
   }
 
   Future<void> _onConfirm() async {
-    final defaultDir = await FileManager.getDefaultDocumentsDirectory();
-    if (_directory == defaultDir) {
+    final cleanDir = FileManager.sanitiseDirectoryPath(_directory);
+    final defaultDir = FileManager.sanitiseDirectoryPath(
+      await FileManager.getDefaultDocumentsDirectory(),
+    );
+    if (cleanDir == defaultDir) {
       stows.customDataDir.value = null;
     } else {
-      stows.customDataDir.value = _directory;
+      stows.customDataDir.value = cleanDir;
     }
     if (mounted) {
       context.pop();

@@ -35,8 +35,7 @@ class FileManager {
 
   static final fileWriteStream = StreamController<FileOperation>.broadcast();
 
-  // TODO(adil192): Implement or remove this
-  static String _sanitisePath(String path) => File(path).path;
+  static String _sanitisePath(String path) => path.replaceAll('\\', '/');
 
   /// A regex that matches the file names/paths of asset files,
   /// including previews, e.g. `mynote.sbn2.1`.
@@ -66,25 +65,96 @@ class FileManager {
     return null;
   }
 
+  static String sanitiseDirectoryPath(String pathOrUri) {
+    if (pathOrUri.startsWith('content://')) {
+      try {
+        var decoded = Uri.decodeFull(pathOrUri);
+        final questionMark = decoded.indexOf('?');
+        if (questionMark != -1) decoded = decoded.substring(0, questionMark);
+        final hash = decoded.indexOf('#');
+        if (hash != -1) decoded = decoded.substring(0, hash);
+
+        if (decoded.contains('/storage/')) {
+          final startIndex = decoded.indexOf('/storage/');
+          return decoded.substring(startIndex).replaceAll(RegExp(r'[/\\]+$'), '');
+        }
+
+        final lastColon = decoded.lastIndexOf(':');
+        if (lastColon != -1) {
+          final prefix = decoded.substring(0, lastColon);
+          final relativePath = decoded.substring(lastColon + 1);
+
+          if (prefix.endsWith('primary')) {
+            final cleanRel = relativePath
+                .replaceAll(RegExp(r'^[/\\]+'), '')
+                .replaceAll(RegExp(r'[/\\]+$'), '');
+            return cleanRel.isEmpty
+                ? '/storage/emulated/0'
+                : '/storage/emulated/0/$cleanRel';
+          } else {
+            final lastSlash = prefix.lastIndexOf('/');
+            final volumeId =
+                lastSlash != -1 ? prefix.substring(lastSlash + 1) : '';
+            if (volumeId.isNotEmpty) {
+              final cleanRel = relativePath
+                  .replaceAll(RegExp(r'^[/\\]+'), '')
+                  .replaceAll(RegExp(r'[/\\]+$'), '');
+              return cleanRel.isEmpty
+                  ? '/storage/$volumeId'
+                  : '/storage/$volumeId/$cleanRel';
+            }
+          }
+        }
+      } catch (e) {
+        log.warning('Could not decode SAF URI: $e');
+      }
+    }
+    return pathOrUri.replaceAll(RegExp(r'[/\\]+$'), '');
+  }
+
   static Future<void> init({
     String? documentsDirectory,
     bool shouldWatchRootDirectory = true,
   }) async {
-    FileManager.documentsDirectory =
-        documentsDirectory ?? await getDocumentsDirectory();
+    final rawDir = documentsDirectory ?? await getDocumentsDirectory();
+    FileManager.documentsDirectory = sanitiseDirectoryPath(rawDir);
+
+    if (Platform.isAndroid) {
+      unawaited(requestStoragePermission());
+    }
+
+    try {
+      final rootDir = Directory(FileManager.documentsDirectory);
+      if (!rootDir.existsSync()) {
+        await rootDir.create(recursive: true);
+      }
+    } catch (e) {
+      log.warning('Could not create root documentsDirectory: $e');
+    }
 
     if (shouldWatchRootDirectory) unawaited(watchRootDirectory());
   }
 
-  static Future<String> getDocumentsDirectory() async =>
-      stows.customDataDir.value ?? await getDefaultDocumentsDirectory();
+  static Future<String> getDocumentsDirectory() async {
+    final raw = stows.customDataDir.value;
+    if (raw == null || raw.isEmpty) {
+      return (await getDefaultDocumentsDirectory())
+          .replaceAll(RegExp(r'[/\\]+$'), '');
+    }
+    final resolved = sanitiseDirectoryPath(raw);
+    if (resolved != raw) {
+      stows.customDataDir.value = resolved;
+    }
+    return resolved;
+  }
 
   static Future<String> getDefaultDocumentsDirectory() async =>
       '${(await getApplicationDocumentsDirectory()).path}/$appRootDirectoryPrefix';
 
   static Future<void> migrateDataDir() async {
     final oldDir = Directory(documentsDirectory);
-    final newDir = Directory(await getDocumentsDirectory());
+    final newPath = sanitiseDirectoryPath(await getDocumentsDirectory());
+    final newDir = Directory(newPath);
     if (oldDir.path == newDir.path) return;
     log.info('Migrating data directory from $oldDir to $newDir');
 
@@ -182,28 +252,38 @@ class FileManager {
   @visibleForTesting
   static Future<void> watchRootDirectory() async {
     final rootDir = Directory(documentsDirectory);
-    await rootDir.create(recursive: true);
+    try {
+      await rootDir.create(recursive: true);
+    } catch (e) {
+      log.warning('Could not create rootDir for watching: $e');
+    }
     if (Platform.isIOS) return;
-    rootDir.watch(recursive: true).listen((event) {
-      final FileOperationType type = switch (event.type) {
-        FileSystemEvent.delete => .delete,
-        FileSystemEvent.create => .write,
-        FileSystemEvent.modify => .write,
-        FileSystemEvent.move => .write,
-        _ =>
-          kDebugMode
-              ? throw UnimplementedError(
-                  'Unhandled FileSystemEvent type: ${event.type}',
-                )
-              : .write,
-      };
-      final String path = event.path
-          .replaceAll('\\', '/')
-          // The path may or may not be relative,
-          // so remove the root directory path to make sure it's relative.
-          .replaceFirst(documentsDirectory, '');
-      broadcastFileWrite(type, path);
-    });
+    try {
+      rootDir.watch(recursive: true).listen((event) {
+        final FileOperationType type = switch (event.type) {
+          FileSystemEvent.delete => .delete,
+          FileSystemEvent.create => .write,
+          FileSystemEvent.modify => .write,
+          FileSystemEvent.move => .write,
+          _ =>
+            kDebugMode
+                ? throw UnimplementedError(
+                    'Unhandled FileSystemEvent type: ${event.type}',
+                  )
+                : .write,
+        };
+        final String path = event.path
+            .replaceAll('\\', '/')
+            // The path may or may not be relative,
+            // so remove the root directory path to make sure it's relative.
+            .replaceFirst(documentsDirectory.replaceAll('\\', '/'), '');
+        broadcastFileWrite(type, path);
+      }, onError: (e) {
+        log.warning('watchRootDirectory error: $e');
+      });
+    } catch (e) {
+      log.warning('watchRootDirectory failed to start: $e');
+    }
   }
 
   @visibleForTesting
@@ -256,11 +336,14 @@ class FileManager {
         filePath.startsWith('/'),
         'Expected filePath to start with a slash, got $filePath',
       );
-      return File(documentsDirectory + filePath);
+      final cleanBase = documentsDirectory.replaceAll(RegExp(r'[/\\]+$'), '');
+      final cleanRel = filePath.startsWith('/') ? filePath : '/$filePath';
+      return File('$cleanBase$cleanRel');
     }
   }
 
-  static Directory getRootDirectory() => Directory(documentsDirectory);
+  static Directory getRootDirectory() =>
+      Directory(sanitiseDirectoryPath(documentsDirectory));
 
   /// Writes [toWrite] to [filePath].
   ///
@@ -277,6 +360,10 @@ class FileManager {
   }) async {
     filePath = _sanitisePath(filePath);
     log.fine('Writing to $filePath');
+
+    if (Platform.isAndroid) {
+      await requestStoragePermission();
+    }
 
     await _saveFileAsRecentlyAccessed(filePath);
 
@@ -312,10 +399,21 @@ class FileManager {
   }
 
   static Future<void> createFolder(String folderPath) async {
-    folderPath = _sanitisePath(folderPath);
+    if (Platform.isAndroid) {
+      await requestStoragePermission();
+    }
+    final cleanBase = documentsDirectory.replaceAll(RegExp(r'[/\\]+$'), '');
+    final cleanRel = folderPath
+        .replaceAll('\\', '/')
+        .replaceAll(RegExp(r'^/+'), '')
+        .replaceAll(RegExp(r'/+$'), '');
 
-    final dir = Directory(documentsDirectory + folderPath);
-    await dir.create(recursive: true);
+    final targetPath = cleanRel.isEmpty ? cleanBase : '$cleanBase/$cleanRel';
+    final dir = Directory(targetPath);
+    if (!dir.existsSync()) {
+      await dir.create(recursive: true);
+    }
+    broadcastFileWrite(FileOperationType.write, '/$cleanRel');
   }
 
   static Future exportFile(
@@ -555,26 +653,38 @@ class FileManager {
 
   static Future renameDirectory(String directoryPath, String newName) async {
     directoryPath = _sanitisePath(directoryPath);
+    final cleanBase = documentsDirectory.replaceAll(RegExp(r'[/\\]+$'), '');
+    final cleanRel =
+        directoryPath.startsWith('/') ? directoryPath : '/$directoryPath';
 
-    final directory = Directory(documentsDirectory + directoryPath);
+    final directory = Directory('$cleanBase$cleanRel');
     if (!directory.existsSync()) return;
 
     /// recursively find children of [directory] for [_renameReferences]
     final List<String> children = [];
     await for (final entity in directory.list(recursive: true)) {
       if (entity is File) {
-        children.add(entity.path.substring(directory.path.length));
+        final normEntity = entity.path.replaceAll('\\', '/');
+        final normDir = directory.path.replaceAll('\\', '/');
+        children.add(normEntity.substring(normDir.length));
       }
     }
 
     final String newPath =
-        directoryPath.substring(0, directoryPath.lastIndexOf('/') + 1) +
-        newName;
-    await directory.rename(documentsDirectory + newPath);
+        cleanRel.substring(0, cleanRel.lastIndexOf('/') + 1) + newName;
+    try {
+      await directory.rename('$cleanBase$newPath');
+    } on FileSystemException {
+      await moveDirContents(
+        oldDir: directory,
+        newDir: Directory('$cleanBase$newPath'),
+      );
+      await directory.delete(recursive: true);
+    }
 
     for (final child in children) {
-      _renameReferences(directoryPath + child, newPath + child);
-      broadcastFileWrite(FileOperationType.delete, directoryPath + child);
+      _renameReferences(cleanRel + child, newPath + child);
+      broadcastFileWrite(FileOperationType.delete, cleanRel + child);
       broadcastFileWrite(FileOperationType.write, newPath + child);
     }
   }
@@ -584,15 +694,19 @@ class FileManager {
     bool recursive = true,
   ]) async {
     directoryPath = _sanitisePath(directoryPath);
+    final cleanBase = documentsDirectory.replaceAll(RegExp(r'[/\\]+$'), '');
+    final cleanRel =
+        directoryPath.startsWith('/') ? directoryPath : '/$directoryPath';
 
-    final directory = Directory(documentsDirectory + directoryPath);
+    final directory = Directory('$cleanBase$cleanRel');
     if (!directory.existsSync()) return;
 
     if (recursive) {
-      // call [deleteFile] on all files that are descendants of the directory
+      final normBase = cleanBase.replaceAll('\\', '/');
       await for (final entity in directory.list(recursive: true)) {
         if (entity is File) {
-          await deleteFile(entity.path.substring(documentsDirectory.length));
+          final normEntity = entity.path.replaceAll('\\', '/');
+          await deleteFile(normEntity.substring(normBase.length));
         }
       }
     }
@@ -624,66 +738,65 @@ class FileManager {
     );
 
     directory = _sanitisePath(directory);
-    if (!directory.endsWith('/')) directory += '/';
+    final cleanBase = documentsDirectory.replaceAll(RegExp(r'[/\\]+$'), '');
+    final cleanRel = directory
+        .replaceAll('\\', '/')
+        .replaceAll(RegExp(r'^/+'), '')
+        .replaceAll(RegExp(r'/+$'), '');
+
+    final targetPath = cleanRel.isEmpty ? cleanBase : '$cleanBase/$cleanRel';
+    final dir = Directory(targetPath);
+    if (!dir.existsSync()) {
+      try {
+        await dir.create(recursive: true);
+      } catch (e) {
+        log.warning('Could not create directory $targetPath: $e');
+        return DirectoryChildren(const [], const []);
+      }
+    }
 
     final List<String> directories = [], files = [];
 
-    final dir = Directory(documentsDirectory + directory);
-    if (!dir.existsSync()) return null;
+    final allEntities = await dir.list().toList();
+    for (final entity in allEntities) {
+      final name = p.basename(entity.path);
 
-    final int directoryPrefixLength = directory.endsWith('/')
-        ? directory.length
-        : directory.length + 1; // +1 for the trailing slash
-    final allChildren = await dir
-        .list()
-        .map((FileSystemEntity entity) {
-          final filePath = entity.path.substring(documentsDirectory.length);
+      if (entity is Directory) {
+        if (!directories.contains(name)) {
+          directories.add(name);
+        }
+        continue;
+      }
 
-          // directories don't need any further processing
-          if (entity is Directory) return filePath;
+      if (Editor.isReservedPath('/$cleanRel/$name') ||
+          Editor.isReservedPath('/$name')) {
+        continue;
+      }
 
-          // filter out reserved files
-          if (Editor.isReservedPath(filePath)) return null;
+      final isSbn2 = name.endsWith(Editor.extension);
+      final isSbn1 = name.endsWith(Editor.extensionOldJson);
 
-          late final isSbn2 = filePath.endsWith(Editor.extension);
-          late final isSbn1 = filePath.endsWith(Editor.extensionOldJson);
-
-          if (!includeExtensions) {
-            if (isSbn2) {
-              return filePath.substring(
-                0,
-                filePath.length - Editor.extension.length,
-              );
-            } else if (isSbn1) {
-              return filePath.substring(
-                0,
-                filePath.length - Editor.extensionOldJson.length,
-              );
-            } else {
-              return null; // filePath is name of some asset
-            }
-          } else if (!includeAssets) {
-            final isAsset = !isSbn2 && !isSbn1;
-            if (isAsset) return null;
-          }
-
-          return filePath;
-        })
-        .where((String? file) => file != null)
-        // remove parent folder
-        .map((file) => file!.substring(directoryPrefixLength))
-        .toList();
-
-    for (final child in allChildren) {
-      if (FileManager.isDirectory(directory + child) &&
-          !directories.contains(child)) {
-        directories.add(child);
-      } else if (!includeAssets && assetFileRegex.hasMatch(child)) {
-        // if the file is an asset, don't add it to the list of files
+      if (!includeExtensions) {
+        if (isSbn2) {
+          final noteName =
+              name.substring(0, name.length - Editor.extension.length);
+          files.add(noteName);
+        } else if (isSbn1) {
+          final noteName =
+              name.substring(0, name.length - Editor.extensionOldJson.length);
+          files.add(noteName);
+        }
+        // if neither, it's an asset or unknown file, ignore
       } else {
-        files.add(child);
+        if (!includeAssets) {
+          final isAsset = !isSbn2 && !isSbn1;
+          if (isAsset) continue;
+        }
+        files.add(name);
       }
     }
+
+    final relPrefix = cleanRel.isEmpty ? '/' : '/$cleanRel/';
 
     switch (sortMetric) {
       case .nameAToZ:
@@ -695,13 +808,17 @@ class FileManager {
       case .lastModifiedNewToOld:
         directories.sort();
         files.sortByCompare(
-          (child) => lastModified(directory + child + Editor.extension),
+          (child) => lastModified(
+            '$relPrefix$child${includeExtensions ? '' : Editor.extension}',
+          ),
           (date, other) => -date.compareTo(other),
         );
       case .lastModifiedOldToNew:
         directories.sort();
         files.sortBy(
-          (child) => lastModified(directory + child + Editor.extension),
+          (child) => lastModified(
+            '$relPrefix$child${includeExtensions ? '' : Editor.extension}',
+          ),
         );
     }
 
@@ -770,7 +887,9 @@ class FileManager {
   /// Behaviour is undefined if [filePath] is not a valid path.
   static bool isDirectory(String filePath) {
     filePath = _sanitisePath(filePath);
-    final directory = Directory(documentsDirectory + filePath);
+    final cleanBase = documentsDirectory.replaceAll(RegExp(r'[/\\]+$'), '');
+    final cleanRel = filePath.startsWith('/') ? filePath : '/$filePath';
+    final directory = Directory('$cleanBase$cleanRel');
     return directory.existsSync();
   }
 
@@ -960,10 +1079,15 @@ class FileManager {
 
   /// Creates the parent directories of filePath if they don't exist.
   static Future _createFileDirectory(String filePath) async {
-    assert(filePath.contains('/'), 'filePath must be a path, not a file name');
-    final parentDirectory = filePath.substring(0, filePath.lastIndexOf('/'));
-    await Directory(documentsDirectory + parentDirectory)
-        .create(recursive: true);
+    final cleanBase = documentsDirectory.replaceAll(RegExp(r'[/\\]+$'), '');
+    final normalized = filePath.replaceAll('\\', '/');
+    final lastSlash = normalized.lastIndexOf('/');
+    final parentDir = lastSlash > 0 ? normalized.substring(0, lastSlash) : '';
+    final targetPath = parentDir.isEmpty ? cleanBase : '$cleanBase$parentDir';
+    final dir = Directory(targetPath);
+    if (!dir.existsSync()) {
+      await dir.create(recursive: true);
+    }
   }
 
   static Future _renameReferences(String fromPath, String toPath) async {
