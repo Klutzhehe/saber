@@ -149,6 +149,7 @@ class EditorHistoryItem {
     this.quillChange,
     this.colorChange,
     this.backgroundPatternChange,
+    this.previousStroke,
   }) : assert(
          type != .move || offset != null,
          'Offset must be provided for move',
@@ -187,6 +188,7 @@ class EditorHistoryItem {
   final DocChange? quillChange;
   final Map<Stroke, Change<Color>>? colorChange;
   final Change<CanvasBackgroundPattern>? backgroundPatternChange;
+  final Stroke? previousStroke;
 
   EditorHistoryItem copyWith({
     EditorHistoryItemType? type,
@@ -198,6 +200,7 @@ class EditorHistoryItem {
     DocChange? quillChange,
     Map<Stroke, Change<Color>>? colorChange,
     Change<CanvasBackgroundPattern>? backgroundPatternChange,
+    Stroke? previousStroke,
   }) {
     return EditorHistoryItem(
       type: type ?? this.type,
@@ -210,6 +213,7 @@ class EditorHistoryItem {
       colorChange: colorChange ?? this.colorChange,
       backgroundPatternChange:
           backgroundPatternChange ?? this.backgroundPatternChange,
+      previousStroke: previousStroke ?? this.previousStroke,
     );
   }
 }
@@ -224,4 +228,5 @@ enum EditorHistoryItemType {
   quillUndoneChange,
   changeColor,
   backgroundPattern,
+  shapeEdit,
 }

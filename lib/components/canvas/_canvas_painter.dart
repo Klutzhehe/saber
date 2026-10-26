@@ -13,6 +13,7 @@ import 'package:saber/data/extensions/color_extensions.dart';
 import 'package:saber/data/tools/highlighter.dart';
 import 'package:saber/data/tools/laser_pointer.dart';
 import 'package:saber/data/tools/select.dart';
+import 'package:saber/data/tools/shape_edit.dart';
 import 'package:saber/data/tools/shape_pen.dart';
 
 class CanvasPainter extends CustomPainter {
@@ -55,6 +56,7 @@ class CanvasPainter extends CustomPainter {
     _drawCurrentStroke(canvas);
     _drawDetectedShape(canvas);
     _drawSelection(canvas);
+    _drawShapeEditHandles(canvas);
     _drawPageIndicator(canvas, size);
   }
 
@@ -248,6 +250,104 @@ class CanvasPainter extends CustomPainter {
         ..strokeWidth = 3
         ..style = .stroke,
     );
+  }
+
+  void _drawShapeEditHandles(Canvas canvas) {
+    final shapeEdit = ShapeEditTool.current;
+    if (shapeEdit.selectedStroke == null ||
+        shapeEdit.selectedPageIndex != pageIndex) {
+      return;
+    }
+
+    final stroke = shapeEdit.selectedStroke!;
+    final handles = shapeEdit.getHandles();
+
+    // 1. Draw dashed outline connecting or highlighting the shape
+    final outlinePaint = Paint()
+      ..color = primaryColor.withValues(alpha: 0.8)
+      ..strokeWidth = 2.0
+      ..style = PaintingStyle.stroke;
+
+    if (stroke is RectangleStroke) {
+      canvas.drawPath(
+        dashPath(
+          Path()..addRect(stroke.rect),
+          dashArray: CircularIntervalList([8, 8]),
+        ),
+        outlinePaint,
+      );
+    } else if (stroke is CircleStroke) {
+      canvas.drawPath(
+        dashPath(
+          Path()
+            ..addOval(
+              Rect.fromCircle(center: stroke.center, radius: stroke.radius),
+            ),
+          dashArray: CircularIntervalList([8, 8]),
+        ),
+        outlinePaint,
+      );
+      // Line from center to radius handle
+      canvas.drawLine(
+        stroke.center,
+        stroke.center + Offset(stroke.radius, 0),
+        Paint()
+          ..color = primaryColor.withValues(alpha: 0.5)
+          ..strokeWidth = 1.5
+          ..style = PaintingStyle.stroke,
+      );
+    } else {
+      final pts = stroke.keyPoints;
+      if (pts.length >= 2) {
+        final polyPath = Path()..moveTo(pts[0].dx, pts[0].dy);
+        for (int i = 1; i < pts.length; i++) {
+          polyPath.lineTo(pts[i].dx, pts[i].dy);
+        }
+        canvas.drawPath(
+          dashPath(polyPath, dashArray: CircularIntervalList([8, 8])),
+          outlinePaint,
+        );
+      }
+    }
+
+    // 2. Draw handles
+    final fillPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    final borderPaint = Paint()
+      ..color = primaryColor
+      ..strokeWidth = 2.5
+      ..style = PaintingStyle.stroke;
+
+    for (final handle in handles) {
+      final pos = handle.position;
+      final isActive = shapeEdit.activeHandleIndex == handle.index;
+      final radius = isActive ? 9.5 : 7.5;
+
+      // Outer shadow
+      canvas.drawCircle(
+        pos + const Offset(0, 1),
+        radius + 0.5,
+        Paint()
+          ..color = Colors.black.withValues(alpha: 0.25)
+          ..style = PaintingStyle.fill,
+      );
+      // White body
+      canvas.drawCircle(pos, radius, fillPaint);
+      // Colored border
+      canvas.drawCircle(pos, radius, borderPaint);
+
+      // Distinguish center handle of circle
+      if (stroke is CircleStroke && handle.index == 0) {
+        canvas.drawCircle(
+          pos,
+          3.5,
+          Paint()
+            ..color = primaryColor
+            ..style = PaintingStyle.fill,
+        );
+      }
+    }
   }
 
   static const double _pageIndicatorFontSize = 20;

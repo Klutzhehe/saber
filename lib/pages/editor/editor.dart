@@ -51,6 +51,7 @@ import 'package:saber/data/tools/laser_pointer.dart';
 import 'package:saber/data/tools/pen.dart';
 import 'package:saber/data/tools/pencil.dart';
 import 'package:saber/data/tools/select.dart';
+import 'package:saber/data/tools/shape_edit.dart';
 import 'package:saber/data/tools/shape_pen.dart';
 import 'package:saber/i18n/strings.g.dart';
 import 'package:saber/pages/home/whiteboard.dart';
@@ -157,12 +158,15 @@ class EditorState extends State<Editor> {
         return Tool.textEditing;
       case .laserPointer:
         return LaserPointer.currentLaserPointer;
+      case .shapeEdit:
+        return ShapeEditTool.current;
     }
   }();
   Tool get currentTool => _currentTool;
   set currentTool(Tool tool) {
     _currentTool = tool;
     if (tool is! Eraser) _lastNonEraserTool = tool;
+    if (tool is! ShapeEditTool) ShapeEditTool.current.unselect();
     stows.lastTool.value = tool.toolId;
   }
 
@@ -530,9 +534,22 @@ class EditorState extends State<Editor> {
 
         case .backgroundPattern:
           coreInfo.backgroundPattern = item.backgroundPatternChange!.previous;
+
+        case .shapeEdit:
+          if (item.previousStroke != null && item.strokes.isNotEmpty) {
+            final page = coreInfo.pages[item.pageIndex];
+            final idx = page.strokes.indexOf(item.strokes.first);
+            if (idx != -1) {
+              page.strokes[idx] = item.previousStroke!;
+              if (ShapeEditTool.current.selectedStroke == item.strokes.first) {
+                ShapeEditTool.current.selectedStroke = item.previousStroke!;
+              }
+              page.redrawStrokes();
+            }
+          }
       }
 
-      if (item.type != .move) {
+      if (item.type != .move && item.type != .shapeEdit) {
         Select.currentSelect.unselect();
       }
     });
@@ -580,6 +597,13 @@ class EditorState extends State<Editor> {
         undo(
           item.copyWith(
             backgroundPatternChange: item.backgroundPatternChange!.reverse(),
+          ),
+        );
+      case .shapeEdit:
+        undo(
+          item.copyWith(
+            strokes: item.previousStroke != null ? [item.previousStroke!] : [],
+            previousStroke: item.strokes.isNotEmpty ? item.strokes.first : null,
           ),
         );
     }
@@ -664,7 +688,8 @@ class EditorState extends State<Editor> {
 
     if (stows.holdToErase.value &&
         currentTool is! Eraser &&
-        currentTool is! Select) {
+        currentTool is! Select &&
+        currentTool is! ShapeEditTool) {
       _startHoldToEraseTimer(details.focalPoint, position);
     }
 
@@ -693,6 +718,45 @@ class EditorState extends State<Editor> {
         select.onDragStart(position, dragPageIndex!);
         history.canRedo = true; // selection doesn't affect history
       }
+    } else if (currentTool is ShapeEditTool) {
+      final shapeEdit = currentTool as ShapeEditTool;
+      final handleIndex = shapeEdit.selectedStroke != null &&
+              shapeEdit.selectedPageIndex == dragPageIndex!
+          ? shapeEdit.hitTestHandle(position)
+          : null;
+
+      if (handleIndex != null) {
+        shapeEdit.activeHandleIndex = handleIndex;
+        shapeEdit.strokeBeforeDrag = shapeEdit.selectedStroke!.copy();
+        shapeEdit.dragStartPosition = position;
+      } else {
+        if (shapeEdit.selectedStroke != null &&
+            shapeEdit.selectedPageIndex == dragPageIndex! &&
+            ShapeEditTool.hitTestStroke(shapeEdit.selectedStroke!, position)) {
+          shapeEdit.activeHandleIndex = null;
+          shapeEdit.strokeBeforeDrag = shapeEdit.selectedStroke!.copy();
+          shapeEdit.dragStartPosition = position;
+        } else {
+          Stroke? hitStroke;
+          for (final stroke in page.strokes.reversed) {
+            if (ShapeEditTool.hitTestStroke(stroke, position)) {
+              hitStroke = stroke;
+              break;
+            }
+          }
+
+          if (hitStroke != null) {
+            shapeEdit.selectedStroke = hitStroke;
+            shapeEdit.selectedPageIndex = dragPageIndex!;
+            shapeEdit.activeHandleIndex = null;
+            shapeEdit.strokeBeforeDrag = hitStroke.copy();
+            shapeEdit.dragStartPosition = position;
+          } else {
+            shapeEdit.unselect();
+          }
+        }
+      }
+      page.redrawStrokes();
     } else if (currentTool is LaserPointer) {
       (currentTool as LaserPointer).onDragStart(position, page, dragPageIndex!);
     }
@@ -702,6 +766,9 @@ class EditorState extends State<Editor> {
 
     if (currentTool is! Select) {
       Select.currentSelect.unselect();
+    }
+    if (currentTool is! ShapeEditTool) {
+      ShapeEditTool.current.unselect();
     }
 
     // setState to let canvas know about currentStroke
@@ -759,6 +826,17 @@ class EditorState extends State<Editor> {
         select.onDragUpdate(position);
       }
       page.redrawStrokes();
+    } else if (currentTool is ShapeEditTool) {
+      final shapeEdit = currentTool as ShapeEditTool;
+      if (shapeEdit.selectedStroke != null &&
+          shapeEdit.selectedPageIndex == dragPageIndex!) {
+        if (shapeEdit.activeHandleIndex != null) {
+          shapeEdit.updateHandle(shapeEdit.activeHandleIndex!, position);
+        } else if (shapeEdit.dragStartPosition != null) {
+          shapeEdit.selectedStroke!.shift(offset);
+        }
+        page.redrawStrokes();
+      }
     } else if (currentTool is LaserPointer) {
       (currentTool as LaserPointer).onDragUpdate(position);
       page.redrawStrokes();
@@ -807,6 +885,16 @@ class EditorState extends State<Editor> {
                   radius: radius,
                   center: center,
                 );
+              } else if (detected.name == DefaultUnistrokeNames.triangle) {
+                final polygon = detected.convertToCanonicalPolygon();
+                newStroke = Stroke(
+                  color: (currentTool as Pen).color,
+                  pressureEnabled: (currentTool as Pen).pressureEnabled,
+                  options: newStroke.options,
+                  pageIndex: newStroke.pageIndex,
+                  page: newStroke.page,
+                  toolId: newStroke.toolId,
+                )..addPoints(polygon);
               }
             }
           }
@@ -871,6 +959,26 @@ class EditorState extends State<Editor> {
             Select.currentSelect.unselect();
           }
         }
+      } else if (currentTool is ShapeEditTool) {
+        final shapeEdit = currentTool as ShapeEditTool;
+        if (shapeEdit.selectedStroke != null &&
+            shapeEdit.strokeBeforeDrag != null) {
+          final oldStroke = shapeEdit.strokeBeforeDrag!;
+          final newStroke = shapeEdit.selectedStroke!;
+          history.recordChange(
+            EditorHistoryItem(
+              type: .shapeEdit,
+              pageIndex: dragPageIndex!,
+              strokes: [newStroke],
+              previousStroke: oldStroke,
+              images: [],
+            ),
+          );
+        }
+        shapeEdit.activeHandleIndex = null;
+        shapeEdit.dragStartPosition = null;
+        shapeEdit.strokeBeforeDrag = null;
+        page.redrawStrokes();
       } else if (currentTool is LaserPointer) {
         shouldSave = false;
         final newStroke = (currentTool as LaserPointer).onDragEnd(

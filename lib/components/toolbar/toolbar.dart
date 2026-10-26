@@ -27,6 +27,7 @@ import 'package:saber/data/tools/laser_pointer.dart';
 import 'package:saber/data/tools/pen.dart';
 import 'package:saber/data/tools/pencil.dart';
 import 'package:saber/data/tools/select.dart';
+import 'package:saber/data/tools/shape_edit.dart';
 import 'package:saber/i18n/strings.g.dart';
 
 class Toolbar extends StatefulWidget {
@@ -437,6 +438,17 @@ class _ToolbarState extends State<Toolbar> {
                         ]
                       : null,
                 ),
+              ),
+              ToolbarIconButton(
+                tooltip: 'Edit Shapes',
+                selected: widget.currentTool is ShapeEditTool,
+                enabled: !widget.readOnly,
+                onPressed: () {
+                  toolOptionsType.value = .hide;
+                  widget.setTool(ShapeEditTool.current);
+                },
+                padding: buttonPadding,
+                child: const Icon(Icons.format_shapes, size: 20),
               ),
               ToolbarIconButton(
                 tooltip: t.editor.pens.laserPointer,

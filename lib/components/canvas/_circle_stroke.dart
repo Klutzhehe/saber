@@ -76,6 +76,12 @@ class CircleStroke extends Stroke {
   @override
   int get length => 25;
 
+  @override
+  List<Offset> get keyPoints => [
+    center,
+    center + Offset(radius, 0),
+  ];
+
   /// A list of 24/N points that form a circle
   /// with [center] and [radius].
   @override

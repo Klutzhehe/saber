@@ -182,6 +182,18 @@ class Stroke {
     }
   }
 
+  void setPoint(int index, Offset newOffset) {
+    if (index >= 0 && index < points.length) {
+      final old = points[index];
+      points[index] = PointVector(newOffset.dx, newOffset.dy, old.pressure);
+      markPolygonNeedsUpdating();
+    }
+  }
+
+  List<Offset> get keyPoints {
+    return points.map((p) => Offset(p.x, p.y)).toList();
+  }
+
   void popFirstPoint() {
     points.removeAt(0);
     markPolygonNeedsUpdating();

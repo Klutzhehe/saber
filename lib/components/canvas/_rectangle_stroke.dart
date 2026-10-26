@@ -77,6 +77,14 @@ class RectangleStroke extends Stroke {
   @override
   int get length => 100;
 
+  @override
+  List<Offset> get keyPoints => [
+    rect.topLeft,
+    rect.topRight,
+    rect.bottomRight,
+    rect.bottomLeft,
+  ];
+
   /// A list of points that form the rectangle's perimeter.
   /// Each side has 24/N points.
   @override
