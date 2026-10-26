@@ -802,8 +802,8 @@ class EditorState extends State<Editor> {
       page.redrawStrokes();
     } else if (currentTool is LineTool) {
       final lineTool = currentTool as LineTool;
-      lineTool.color = currentPen.color;
-      lineTool.strokeWidth = currentPen.strokeWidth;
+      lineTool.color = Pen.currentPen.color;
+      lineTool.strokeWidth = Pen.currentPen.strokeWidth;
       lineTool.activePageIndex = dragPageIndex!;
       final snapped = lineTool.snapPoint(position, page.strokes);
 
@@ -1147,9 +1147,9 @@ class EditorState extends State<Editor> {
     final targetPageIndex = lineTool.activePageIndex!;
     final page = coreInfo.pages[targetPageIndex];
 
-    final strokeColor = currentPen.color;
+    final strokeColor = Pen.currentPen.color;
     final strokeOptions = StrokeOptions(
-      size: currentPen.strokeWidth,
+      size: Pen.currentPen.strokeWidth,
       isComplete: true,
       smoothing: 0,
       streamline: 0,
