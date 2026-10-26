@@ -48,9 +48,11 @@ import 'package:saber/data/tools/_tool.dart';
 import 'package:saber/data/tools/eraser.dart';
 import 'package:saber/data/tools/highlighter.dart';
 import 'package:saber/data/tools/laser_pointer.dart';
+import 'package:saber/data/tools/line_tool.dart';
 import 'package:saber/data/tools/pen.dart';
 import 'package:saber/data/tools/pencil.dart';
 import 'package:saber/data/tools/select.dart';
+import 'package:saber/data/tools/shape_detector.dart';
 import 'package:saber/data/tools/shape_edit.dart';
 import 'package:saber/data/tools/shape_pen.dart';
 import 'package:saber/i18n/strings.g.dart';
@@ -160,13 +162,20 @@ class EditorState extends State<Editor> {
         return LaserPointer.currentLaserPointer;
       case .shapeEdit:
         return ShapeEditTool.current;
+      case .line:
+        return LineTool.current;
     }
   }();
   Tool get currentTool => _currentTool;
   set currentTool(Tool tool) {
+    if (tool == _currentTool) return;
+    if (_currentTool is LineTool && (_currentTool as LineTool).isActive) {
+      _commitLineToolStroke();
+    }
     _currentTool = tool;
     if (tool is! Eraser) _lastNonEraserTool = tool;
     if (tool is! ShapeEditTool) ShapeEditTool.current.unselect();
+    if (tool is! LineTool) LineTool.current.reset();
     stows.lastTool.value = tool.toolId;
   }
 
@@ -536,8 +545,29 @@ class EditorState extends State<Editor> {
           coreInfo.backgroundPattern = item.backgroundPatternChange!.previous;
 
         case .shapeEdit:
-          if (item.previousStroke != null && item.strokes.isNotEmpty) {
-            final page = coreInfo.pages[item.pageIndex];
+          final page = coreInfo.pages[item.pageIndex];
+          if (item.previousStrokes != null &&
+              item.previousStrokes!.length == item.strokes.length) {
+            for (int i = 0; i < item.strokes.length; i++) {
+              final curr = item.strokes[i];
+              final prev = item.previousStrokes![i];
+              final idx = page.strokes.indexOf(curr);
+              if (idx != -1) {
+                page.strokes[idx] = prev;
+                if (ShapeEditTool.current.selectedStroke == curr) {
+                  ShapeEditTool.current.selectedStroke = prev;
+                }
+              }
+            }
+            if (ShapeEditTool.current.selectedStroke != null) {
+              ShapeEditTool.current.select(
+                ShapeEditTool.current.selectedStroke!,
+                item.pageIndex,
+                page.strokes,
+              );
+            }
+            page.redrawStrokes();
+          } else if (item.previousStroke != null && item.strokes.isNotEmpty) {
             final idx = page.strokes.indexOf(item.strokes.first);
             if (idx != -1) {
               page.strokes[idx] = item.previousStroke!;
@@ -602,8 +632,13 @@ class EditorState extends State<Editor> {
       case .shapeEdit:
         undo(
           item.copyWith(
-            strokes: item.previousStroke != null ? [item.previousStroke!] : [],
-            previousStroke: item.strokes.isNotEmpty ? item.strokes.first : null,
+            strokes: item.previousStrokes ??
+                (item.previousStroke != null ? [item.previousStroke!] : []),
+            previousStrokes: item.previousStrokes != null ? item.strokes : null,
+            previousStroke: item.previousStrokes == null &&
+                    item.strokes.isNotEmpty
+                ? item.strokes.first
+                : null,
           ),
         );
     }
@@ -689,7 +724,8 @@ class EditorState extends State<Editor> {
     if (stows.holdToErase.value &&
         currentTool is! Eraser &&
         currentTool is! Select &&
-        currentTool is! ShapeEditTool) {
+        currentTool is! ShapeEditTool &&
+        currentTool is! LineTool) {
       _startHoldToEraseTimer(details.focalPoint, position);
     }
 
@@ -727,32 +763,68 @@ class EditorState extends State<Editor> {
 
       if (handleIndex != null) {
         shapeEdit.activeHandleIndex = handleIndex;
-        shapeEdit.strokeBeforeDrag = shapeEdit.selectedStroke!.copy();
         shapeEdit.dragStartPosition = position;
+        if (shapeEdit.selectedTable != null) {
+          shapeEdit.tableStrokesBeforeDrag =
+              shapeEdit.selectedTable!.copyStrokes();
+        } else {
+          shapeEdit.strokeBeforeDrag = shapeEdit.selectedStroke!.copy();
+        }
       } else {
+        Stroke? hitStroke;
         if (shapeEdit.selectedStroke != null &&
             shapeEdit.selectedPageIndex == dragPageIndex! &&
             ShapeEditTool.hitTestStroke(shapeEdit.selectedStroke!, position)) {
-          shapeEdit.activeHandleIndex = null;
-          shapeEdit.strokeBeforeDrag = shapeEdit.selectedStroke!.copy();
-          shapeEdit.dragStartPosition = position;
+          hitStroke = shapeEdit.selectedStroke;
         } else {
-          Stroke? hitStroke;
           for (final stroke in page.strokes.reversed) {
             if (ShapeEditTool.hitTestStroke(stroke, position)) {
               hitStroke = stroke;
               break;
             }
           }
+        }
 
-          if (hitStroke != null) {
-            shapeEdit.selectedStroke = hitStroke;
-            shapeEdit.selectedPageIndex = dragPageIndex!;
-            shapeEdit.activeHandleIndex = null;
-            shapeEdit.strokeBeforeDrag = hitStroke.copy();
-            shapeEdit.dragStartPosition = position;
+        if (hitStroke != null) {
+          shapeEdit.select(hitStroke, dragPageIndex!, page.strokes);
+          shapeEdit.activeHandleIndex = null;
+          shapeEdit.dragStartPosition = position;
+          if (shapeEdit.selectedTable != null) {
+            shapeEdit.tableStrokesBeforeDrag =
+                shapeEdit.selectedTable!.copyStrokes();
           } else {
-            shapeEdit.unselect();
+            shapeEdit.strokeBeforeDrag = shapeEdit.selectedStroke!.copy();
+          }
+        } else {
+          shapeEdit.unselect();
+        }
+      }
+      page.redrawStrokes();
+    } else if (currentTool is LineTool) {
+      final lineTool = currentTool as LineTool;
+      lineTool.color = currentPen.color;
+      lineTool.strokeWidth = currentPen.strokeWidth;
+      lineTool.activePageIndex = dragPageIndex!;
+      final snapped = lineTool.snapPoint(position, page.strokes);
+
+      final now = DateTime.now();
+      final isDoubleTap = lineTool.lastTapTime != null &&
+          now.difference(lineTool.lastTapTime!).inMilliseconds < 350;
+      lineTool.lastTapTime = now;
+
+      if (isDoubleTap && lineTool.committedPoints.length >= 2) {
+        _commitLineToolStroke();
+      } else {
+        if (lineTool.committedPoints.isEmpty) {
+          lineTool.committedPoints.add(snapped);
+          lineTool.currentPointer = snapped;
+        } else {
+          if (lineTool.committedPoints.length >= 2 &&
+              (snapped - lineTool.committedPoints.first).distance < 18) {
+            lineTool.committedPoints.add(lineTool.committedPoints.first);
+            _commitLineToolStroke();
+          } else {
+            lineTool.currentPointer = snapped;
           }
         }
       }
@@ -769,6 +841,9 @@ class EditorState extends State<Editor> {
     }
     if (currentTool is! ShapeEditTool) {
       ShapeEditTool.current.unselect();
+    }
+    if (currentTool is! LineTool) {
+      LineTool.current.reset();
     }
 
     // setState to let canvas know about currentStroke
@@ -833,8 +908,21 @@ class EditorState extends State<Editor> {
         if (shapeEdit.activeHandleIndex != null) {
           shapeEdit.updateHandle(shapeEdit.activeHandleIndex!, position);
         } else if (shapeEdit.dragStartPosition != null) {
-          shapeEdit.selectedStroke!.shift(offset);
+          if (shapeEdit.selectedTable != null) {
+            for (final s in shapeEdit.selectedTable!.allStrokes) {
+              s.shift(offset);
+            }
+          } else {
+            shapeEdit.selectedStroke!.shift(offset);
+          }
         }
+        page.redrawStrokes();
+      }
+    } else if (currentTool is LineTool) {
+      final lineTool = currentTool as LineTool;
+      if (lineTool.activePageIndex == dragPageIndex!) {
+        final snapped = lineTool.snapPoint(position, page.strokes);
+        lineTool.currentPointer = snapped;
         page.redrawStrokes();
       }
     } else if (currentTool is LaserPointer) {
@@ -860,41 +948,65 @@ class EditorState extends State<Editor> {
           if (stows.autoStraightenLines.value && newStroke.isStraightLine()) {
             newStroke.convertToLine();
           } else if (stows.autoDetectShapes.value) {
-            final detected = newStroke.detectShape();
-            if (detected != null && detected.score >= 0.65) {
-              if (detected.name == DefaultUnistrokeNames.rectangle) {
-                final rect = detected.convertToRect();
-                newStroke = RectangleStroke(
-                  color: (currentTool as Pen).color,
-                  pressureEnabled: (currentTool as Pen).pressureEnabled,
-                  options: newStroke.options,
-                  pageIndex: newStroke.pageIndex,
-                  page: newStroke.page,
-                  toolId: newStroke.toolId,
-                  rect: rect,
-                );
-              } else if (detected.name == DefaultUnistrokeNames.circle) {
-                final (center, radius) = detected.convertToCircle();
-                newStroke = CircleStroke(
-                  color: (currentTool as Pen).color,
-                  pressureEnabled: (currentTool as Pen).pressureEnabled,
-                  options: newStroke.options,
-                  pageIndex: newStroke.pageIndex,
-                  page: newStroke.page,
-                  toolId: newStroke.toolId,
-                  radius: radius,
-                  center: center,
-                );
-              } else if (detected.name == DefaultUnistrokeNames.triangle) {
-                final polygon = detected.convertToCanonicalPolygon();
-                newStroke = Stroke(
-                  color: (currentTool as Pen).color,
-                  pressureEnabled: (currentTool as Pen).pressureEnabled,
-                  options: newStroke.options,
-                  pageIndex: newStroke.pageIndex,
-                  page: newStroke.page,
-                  toolId: newStroke.toolId,
-                )..addPoints(polygon);
+            final geom = ShapeDetector.analyzeClosedStroke(newStroke.points);
+            if (geom != null && geom.$1 == 'triangle') {
+              newStroke = Stroke(
+                color: (currentTool as Pen).color,
+                pressureEnabled: (currentTool as Pen).pressureEnabled,
+                options: newStroke.options.copyWith(isComplete: true),
+                pageIndex: newStroke.pageIndex,
+                page: newStroke.page,
+                toolId: newStroke.toolId,
+              )..addPoints(geom.$2);
+            } else {
+              final detected = newStroke.detectShape();
+              if (detected != null && detected.score >= 0.65) {
+                if (detected.name == DefaultUnistrokeNames.rectangle) {
+                  if (geom != null && geom.$1 == 'triangle') {
+                    newStroke = Stroke(
+                      color: (currentTool as Pen).color,
+                      pressureEnabled: (currentTool as Pen).pressureEnabled,
+                      options: newStroke.options.copyWith(isComplete: true),
+                      pageIndex: newStroke.pageIndex,
+                      page: newStroke.page,
+                      toolId: newStroke.toolId,
+                    )..addPoints(geom.$2);
+                  } else {
+                    final rect = detected.convertToRect();
+                    newStroke = RectangleStroke(
+                      color: (currentTool as Pen).color,
+                      pressureEnabled: (currentTool as Pen).pressureEnabled,
+                      options: newStroke.options,
+                      pageIndex: newStroke.pageIndex,
+                      page: newStroke.page,
+                      toolId: newStroke.toolId,
+                      rect: rect,
+                    );
+                  }
+                } else if (detected.name == DefaultUnistrokeNames.circle) {
+                  final (center, radius) = detected.convertToCircle();
+                  newStroke = CircleStroke(
+                    color: (currentTool as Pen).color,
+                    pressureEnabled: (currentTool as Pen).pressureEnabled,
+                    options: newStroke.options,
+                    pageIndex: newStroke.pageIndex,
+                    page: newStroke.page,
+                    toolId: newStroke.toolId,
+                    radius: radius,
+                    center: center,
+                  );
+                } else if (detected.name == DefaultUnistrokeNames.triangle) {
+                  final polygon =
+                      geom?.$2 ?? detected.convertToCanonicalPolygon();
+                  newStroke = Stroke(
+                    color: (currentTool as Pen).color,
+                    pressureEnabled: (currentTool as Pen).pressureEnabled,
+                    options: newStroke.options.copyWith(isComplete: true),
+                    pageIndex: newStroke.pageIndex,
+                    page: newStroke.page,
+                    toolId: newStroke.toolId,
+                  )..addPoints(polygon);
+                }
               }
             }
           }
@@ -961,7 +1073,19 @@ class EditorState extends State<Editor> {
         }
       } else if (currentTool is ShapeEditTool) {
         final shapeEdit = currentTool as ShapeEditTool;
-        if (shapeEdit.selectedStroke != null &&
+        if (shapeEdit.selectedTable != null &&
+            shapeEdit.tableStrokesBeforeDrag != null) {
+          final tableStrokes = shapeEdit.selectedTable!.allStrokes;
+          history.recordChange(
+            EditorHistoryItem(
+              type: .shapeEdit,
+              pageIndex: dragPageIndex!,
+              strokes: tableStrokes,
+              previousStrokes: shapeEdit.tableStrokesBeforeDrag,
+              images: [],
+            ),
+          );
+        } else if (shapeEdit.selectedStroke != null &&
             shapeEdit.strokeBeforeDrag != null) {
           final oldStroke = shapeEdit.strokeBeforeDrag!;
           final newStroke = shapeEdit.selectedStroke!;
@@ -978,7 +1102,26 @@ class EditorState extends State<Editor> {
         shapeEdit.activeHandleIndex = null;
         shapeEdit.dragStartPosition = null;
         shapeEdit.strokeBeforeDrag = null;
+        shapeEdit.tableStrokesBeforeDrag = null;
         page.redrawStrokes();
+      } else if (currentTool is LineTool) {
+        final lineTool = currentTool as LineTool;
+        if (lineTool.activePageIndex == dragPageIndex! &&
+            lineTool.currentPointer != null &&
+            lineTool.committedPoints.isNotEmpty) {
+          final target = lineTool.currentPointer!;
+          final last = lineTool.committedPoints.last;
+          if ((target - last).distance > 4) {
+            if (lineTool.committedPoints.length >= 2 &&
+                (target - lineTool.committedPoints.first).distance < 18) {
+              lineTool.committedPoints.add(lineTool.committedPoints.first);
+              _commitLineToolStroke();
+            } else {
+              lineTool.committedPoints.add(target);
+            }
+          }
+          page.redrawStrokes();
+        }
       } else if (currentTool is LaserPointer) {
         shouldSave = false;
         final newStroke = (currentTool as LaserPointer).onDragEnd(
@@ -992,6 +1135,47 @@ class EditorState extends State<Editor> {
     });
 
     if (shouldSave) autosaveAfterDelay();
+  }
+
+  void _commitLineToolStroke() {
+    final lineTool = LineTool.current;
+    if (lineTool.committedPoints.length < 2 ||
+        lineTool.activePageIndex == null) {
+      lineTool.reset();
+      return;
+    }
+    final targetPageIndex = lineTool.activePageIndex!;
+    final page = coreInfo.pages[targetPageIndex];
+
+    final strokeColor = currentPen.color;
+    final strokeOptions = StrokeOptions(
+      size: currentPen.strokeWidth,
+      isComplete: true,
+      smoothing: 0,
+      streamline: 0,
+    );
+
+    final stroke = Stroke(
+      color: strokeColor,
+      pressureEnabled: false,
+      options: strokeOptions,
+      pageIndex: targetPageIndex,
+      page: page,
+      toolId: ToolId.line,
+    )..addPoints(lineTool.committedPoints);
+
+    page.strokes.add(stroke);
+    history.recordChange(
+      EditorHistoryItem(
+        type: .draw,
+        pageIndex: targetPageIndex,
+        strokes: [stroke],
+        images: [],
+      ),
+    );
+    lineTool.reset();
+    page.redrawStrokes();
+    autosaveAfterDelay();
   }
 
   void onInteractionEnd(ScaleEndDetails details) {

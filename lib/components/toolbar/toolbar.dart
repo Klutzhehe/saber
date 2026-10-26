@@ -24,6 +24,7 @@ import 'package:saber/data/tools/_tool.dart';
 import 'package:saber/data/tools/eraser.dart';
 import 'package:saber/data/tools/highlighter.dart';
 import 'package:saber/data/tools/laser_pointer.dart';
+import 'package:saber/data/tools/line_tool.dart';
 import 'package:saber/data/tools/pen.dart';
 import 'package:saber/data/tools/pencil.dart';
 import 'package:saber/data/tools/select.dart';
@@ -449,6 +450,17 @@ class _ToolbarState extends State<Toolbar> {
                 },
                 padding: buttonPadding,
                 child: const Icon(Icons.format_shapes, size: 20),
+              ),
+              ToolbarIconButton(
+                tooltip: 'Line Tool',
+                selected: widget.currentTool is LineTool,
+                enabled: !widget.readOnly,
+                onPressed: () {
+                  toolOptionsType.value = .hide;
+                  widget.setTool(LineTool.current);
+                },
+                padding: buttonPadding,
+                child: const Icon(Icons.polyline, size: 20),
               ),
               ToolbarIconButton(
                 tooltip: t.editor.pens.laserPointer,

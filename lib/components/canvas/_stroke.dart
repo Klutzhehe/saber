@@ -190,6 +190,14 @@ class Stroke {
     }
   }
 
+  void setPoints(List<Offset> newPoints) {
+    points.clear();
+    for (final p in newPoints) {
+      points.add(PointVector(p.dx, p.dy, 0.5));
+    }
+    markPolygonNeedsUpdating();
+  }
+
   List<Offset> get keyPoints {
     return points.map((p) => Offset(p.x, p.y)).toList();
   }

@@ -9,6 +9,7 @@ import 'package:saber/components/canvas/_rectangle_stroke.dart';
 import 'package:saber/components/canvas/_stroke.dart';
 import 'package:saber/data/prefs.dart';
 import 'package:saber/data/tools/pen.dart';
+import 'package:saber/data/tools/shape_detector.dart';
 import 'package:saber/i18n/strings.g.dart';
 
 class ShapePen extends Pen {
@@ -72,6 +73,19 @@ class ShapePen extends Pen {
 
     if (detectedShape == null) return rawStroke;
 
+    final geom = ShapeDetector.analyzeClosedStroke(rawStroke.points);
+    if (geom != null && geom.$1 == 'triangle') {
+      log.info('Detected triangle via geometric analysis');
+      return Stroke(
+        color: color,
+        pressureEnabled: pressureEnabled,
+        options: rawStroke.options.copyWith(isComplete: true),
+        pageIndex: rawStroke.pageIndex,
+        page: rawStroke.page,
+        toolId: toolId,
+      )..addPoints(geom.$2);
+    }
+
     switch (detectedShape.name) {
       case null:
         log.info('Detected unknown shape');
@@ -106,7 +120,7 @@ class ShapePen extends Pen {
         );
       case DefaultUnistrokeNames.triangle:
       case DefaultUnistrokeNames.star:
-        final polygon = detectedShape.convertToCanonicalPolygon();
+        final polygon = geom?.$2 ?? detectedShape.convertToCanonicalPolygon();
         log.info('Detected ${detectedShape.name}');
         return Stroke(
           color: color,

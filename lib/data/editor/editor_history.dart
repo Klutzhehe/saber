@@ -150,6 +150,7 @@ class EditorHistoryItem {
     this.colorChange,
     this.backgroundPatternChange,
     this.previousStroke,
+    this.previousStrokes,
   }) : assert(
          type != .move || offset != null,
          'Offset must be provided for move',
@@ -189,6 +190,7 @@ class EditorHistoryItem {
   final Map<Stroke, Change<Color>>? colorChange;
   final Change<CanvasBackgroundPattern>? backgroundPatternChange;
   final Stroke? previousStroke;
+  final List<Stroke>? previousStrokes;
 
   EditorHistoryItem copyWith({
     EditorHistoryItemType? type,
@@ -201,6 +203,7 @@ class EditorHistoryItem {
     Map<Stroke, Change<Color>>? colorChange,
     Change<CanvasBackgroundPattern>? backgroundPatternChange,
     Stroke? previousStroke,
+    List<Stroke>? previousStrokes,
   }) {
     return EditorHistoryItem(
       type: type ?? this.type,
@@ -214,6 +217,7 @@ class EditorHistoryItem {
       backgroundPatternChange:
           backgroundPatternChange ?? this.backgroundPatternChange,
       previousStroke: previousStroke ?? this.previousStroke,
+      previousStrokes: previousStrokes ?? this.previousStrokes,
     );
   }
 }

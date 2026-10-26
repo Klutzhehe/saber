@@ -12,6 +12,7 @@ import 'package:saber/data/editor/page.dart';
 import 'package:saber/data/extensions/color_extensions.dart';
 import 'package:saber/data/tools/highlighter.dart';
 import 'package:saber/data/tools/laser_pointer.dart';
+import 'package:saber/data/tools/line_tool.dart';
 import 'package:saber/data/tools/select.dart';
 import 'package:saber/data/tools/shape_edit.dart';
 import 'package:saber/data/tools/shape_pen.dart';
@@ -57,6 +58,7 @@ class CanvasPainter extends CustomPainter {
     _drawDetectedShape(canvas);
     _drawSelection(canvas);
     _drawShapeEditHandles(canvas);
+    _drawLineToolPreview(canvas);
     _drawPageIndicator(canvas, size);
   }
 
@@ -347,6 +349,85 @@ class CanvasPainter extends CustomPainter {
             ..style = PaintingStyle.fill,
         );
       }
+    }
+  }
+
+  void _drawLineToolPreview(Canvas canvas) {
+    final lineTool = LineTool.current;
+    if (lineTool.activePageIndex != pageIndex || !lineTool.isActive) return;
+
+    final pts = lineTool.committedPoints;
+    final color = lineTool.color.withInversion(invert);
+    final strokeWidth = lineTool.strokeWidth;
+
+    final linePaint = Paint()
+      ..color = color
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+
+    // Draw completed segments
+    if (pts.length >= 2) {
+      final path = Path()..moveTo(pts.first.dx, pts.first.dy);
+      for (int i = 1; i < pts.length; i++) {
+        path.lineTo(pts[i].dx, pts[i].dy);
+      }
+      canvas.drawPath(path, linePaint);
+    }
+
+    // Draw active segment to currentPointer
+    if (lineTool.currentPointer != null && pts.isNotEmpty) {
+      final last = pts.last;
+      final target = lineTool.currentPointer!;
+      final previewPaint = Paint()
+        ..color = primaryColor
+        ..strokeWidth = strokeWidth
+        ..style = PaintingStyle.stroke;
+
+      canvas.drawPath(
+        dashPath(
+          Path()
+            ..moveTo(last.dx, last.dy)
+            ..lineTo(target.dx, target.dy),
+          dashArray: CircularIntervalList([6, 6]),
+        ),
+        previewPaint,
+      );
+    }
+
+    // Draw vertex dots at committed points
+    final dotFill = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    final dotBorder = Paint()
+      ..color = primaryColor
+      ..strokeWidth = 2.0
+      ..style = PaintingStyle.stroke;
+
+    for (final pt in pts) {
+      canvas.drawCircle(pt, 4.5, dotFill);
+      canvas.drawCircle(pt, 4.5, dotBorder);
+    }
+
+    // Draw snap indicator if snapTarget exists
+    if (lineTool.snapTarget != null) {
+      final snapPos = lineTool.snapTarget!;
+      final isClosing = pts.isNotEmpty && (snapPos - pts.first).distance < 2;
+
+      final snapRing = Paint()
+        ..color = isClosing ? Colors.greenAccent : primaryColor
+        ..strokeWidth = 2.5
+        ..style = PaintingStyle.stroke;
+
+      canvas.drawCircle(snapPos, isClosing ? 10.0 : 7.0, snapRing);
+      canvas.drawCircle(
+        snapPos,
+        isClosing ? 4.0 : 2.5,
+        Paint()
+          ..color = isClosing ? Colors.greenAccent : primaryColor
+          ..style = PaintingStyle.fill,
+      );
     }
   }
 
