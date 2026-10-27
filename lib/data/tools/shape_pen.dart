@@ -4,8 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:logging/logging.dart';
 import 'package:one_dollar_unistroke_recognizer/one_dollar_unistroke_recognizer.dart';
-import 'package:saber/components/canvas/_circle_stroke.dart';
-import 'package:saber/components/canvas/_rectangle_stroke.dart';
 import 'package:saber/components/canvas/_stroke.dart';
 import 'package:saber/data/prefs.dart';
 import 'package:saber/data/tools/pen.dart';
@@ -58,78 +56,33 @@ class ShapePen extends Pen {
     }
   }
 
-  @override
-  Stroke? onDragEnd() {
+  /// Stops the shape preview, e.g. once a stroke is finished.
+  static void cancelDetection() {
     _detectShapeDebouncer?.cancel();
     _detectShapeDebouncer = null;
-    _detectShape();
+    detectedShape = null;
+  }
+
+  /// Converts [rawStroke] into the shape it most resembles,
+  /// or null if it doesn't resemble any shape.
+  static Stroke? recognize(Stroke rawStroke) {
+    final shape = ShapeDetector.recognize(
+      rawStroke,
+      minScore: 0,
+      includeLinesAndStars: true,
+    );
+    log.info('Detected ${shape?.runtimeType ?? 'unknown shape'}');
+    return shape;
+  }
+
+  @override
+  Stroke? onDragEnd() {
+    cancelDetection();
 
     final rawStroke = super.onDragEnd();
     if (rawStroke == null) return null;
     assert(rawStroke.options.isComplete == true);
 
-    final detectedShape = ShapePen.detectedShape;
-    ShapePen.detectedShape = null;
-
-    if (detectedShape == null) return rawStroke;
-
-    final geom = ShapeDetector.analyzeClosedStroke(rawStroke.points);
-    if (geom != null && geom.$1 == 'triangle') {
-      log.info('Detected triangle via geometric analysis');
-      return Stroke(
-        color: color,
-        pressureEnabled: pressureEnabled,
-        options: rawStroke.options.copyWith(isComplete: true),
-        pageIndex: rawStroke.pageIndex,
-        page: rawStroke.page,
-        toolId: toolId,
-      )..addPoints(geom.$2);
-    }
-
-    switch (detectedShape.name) {
-      case null:
-        log.info('Detected unknown shape');
-        return rawStroke;
-      case DefaultUnistrokeNames.line:
-        log.info('Detected line');
-        return rawStroke..convertToLine();
-      case DefaultUnistrokeNames.rectangle:
-        final rect = detectedShape.convertToRect();
-        log.info('Detected rectangle: $rect');
-        return RectangleStroke(
-          color: color,
-          pressureEnabled: pressureEnabled,
-          options: rawStroke.options,
-          pageIndex: rawStroke.pageIndex,
-          page: rawStroke.page,
-          toolId: toolId,
-          rect: rect,
-        );
-      case DefaultUnistrokeNames.circle:
-        final (center, radius) = detectedShape.convertToCircle();
-        log.info('Detected circle: c=$center, r=$radius');
-        return CircleStroke(
-          color: color,
-          pressureEnabled: pressureEnabled,
-          options: rawStroke.options,
-          pageIndex: rawStroke.pageIndex,
-          page: rawStroke.page,
-          toolId: toolId,
-          radius: radius,
-          center: center,
-        );
-      case DefaultUnistrokeNames.triangle:
-      case DefaultUnistrokeNames.star:
-        final polygon = geom?.$2 ?? detectedShape.convertToCanonicalPolygon();
-        log.info('Detected ${detectedShape.name}');
-        return Stroke(
-          color: color,
-          pressureEnabled: pressureEnabled,
-          options: rawStroke.options,
-          pageIndex: rawStroke.pageIndex,
-          page: rawStroke.page,
-          toolId: toolId,
-        )..addPoints(polygon);
-    }
+    return recognize(rawStroke) ?? rawStroke;
   }
 }

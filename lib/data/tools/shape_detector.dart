@@ -1,14 +1,104 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:one_dollar_unistroke_recognizer/one_dollar_unistroke_recognizer.dart';
 import 'package:perfect_freehand/perfect_freehand.dart';
+import 'package:saber/components/canvas/_circle_stroke.dart';
+import 'package:saber/components/canvas/_rectangle_stroke.dart';
+import 'package:saber/components/canvas/_stroke.dart';
 
 class ShapeDetector {
   new _();
 
-  /// Analyzes a closed stroke to detect whether it is a triangle or rectangle
-  /// based on geometric corner and polygon simplification.
+  /// Converts [stroke] into a clean shape (circle, rectangle, triangle,
+  /// diamond or other quadrilateral), or returns null if no shape is found.
   ///
-  /// Returns `(shapeName, canonicalVertices)` or `null` if not a recognized polygon.
+  /// [minScore] is the minimum $1 recognizer score for circles and
+  /// rectangles that aren't found by geometric analysis.
+  /// If [includeLinesAndStars] is true, lines and stars are also recognized.
+  static Stroke? recognize(
+    Stroke stroke, {
+    double minScore = 0.65,
+    bool includeLinesAndStars = false,
+  }) {
+    // Polygons first: corner analysis handles rotated shapes (e.g. diamonds)
+    // which the $1 recognizer would turn into an axis-aligned rectangle.
+    final geom = analyzeClosedStroke(stroke.points);
+    if (geom != null) {
+      final (name, vertices) = geom;
+      if (name == 'rectangle' && _isAxisAligned(vertices)) {
+        return RectangleStroke(
+          color: stroke.color,
+          pressureEnabled: stroke.pressureEnabled,
+          options: stroke.options.copyWith(isComplete: true),
+          pageIndex: stroke.pageIndex,
+          page: stroke.page,
+          toolId: stroke.toolId,
+          rect: _boundingRect(vertices),
+        );
+      }
+      return polygonStroke(stroke, vertices);
+    }
+
+    final detected = stroke.detectShape();
+    if (detected == null || detected.score < minScore) return null;
+    switch (detected.name) {
+      case DefaultUnistrokeNames.circle:
+        final (center, radius) = detected.convertToCircle();
+        return CircleStroke(
+          color: stroke.color,
+          pressureEnabled: stroke.pressureEnabled,
+          options: stroke.options.copyWith(isComplete: true),
+          pageIndex: stroke.pageIndex,
+          page: stroke.page,
+          toolId: stroke.toolId,
+          radius: radius,
+          center: center,
+        );
+      case DefaultUnistrokeNames.rectangle:
+        return RectangleStroke(
+          color: stroke.color,
+          pressureEnabled: stroke.pressureEnabled,
+          options: stroke.options.copyWith(isComplete: true),
+          pageIndex: stroke.pageIndex,
+          page: stroke.page,
+          toolId: stroke.toolId,
+          rect: detected.convertToRect(),
+        );
+      case DefaultUnistrokeNames.triangle:
+        return polygonStroke(stroke, detected.convertToCanonicalPolygon());
+      case DefaultUnistrokeNames.star:
+        if (!includeLinesAndStars) return null;
+        return polygonStroke(stroke, detected.convertToCanonicalPolygon());
+      case DefaultUnistrokeNames.line:
+        if (!includeLinesAndStars) return null;
+        return stroke.copy()..convertToLine();
+      case null:
+        return null;
+    }
+  }
+
+  /// Builds a polygon stroke with a constant width and no smoothing,
+  /// pressure simulation or tapers, so the edges render as solid lines.
+  static Stroke polygonStroke(Stroke source, List<Offset> vertices) {
+    return Stroke(
+      color: source.color,
+      pressureEnabled: false,
+      options: StrokeOptions(
+        size: source.options.size,
+        isComplete: true,
+        smoothing: 0,
+        streamline: 0,
+      ),
+      pageIndex: source.pageIndex,
+      page: source.page,
+      toolId: source.toolId,
+    )..addPoints(vertices);
+  }
+
+  /// Analyzes a closed stroke to detect whether it is a triangle or
+  /// quadrilateral based on geometric corner and polygon simplification.
+  ///
+  /// Returns `(shapeName, closedVertices)` or `null` if not a recognized polygon.
   static (String shapeName, List<Offset> vertices)? analyzeClosedStroke(
     List<PointVector> points,
   ) {
@@ -47,21 +137,16 @@ class ShapeDetector {
 
       // Drop duplicate closing point
       final vertices = simplified.sublist(0, simplified.length - 1);
+      if (vertices.length != 3 && vertices.length != 4) continue;
 
-      if (vertices.length == 3) {
-        // Triangle with 3 corners!
-        final v = _snapTriangleVertices(vertices);
-        return ('triangle', [v[0], v[1], v[2], v[0]]);
-      } else if (vertices.length == 4) {
-        // Quadrilateral with 4 corners!
-        return ('rectangle', [
-          vertices[0],
-          vertices[1],
-          vertices[2],
-          vertices[3],
-          vertices[0],
-        ]);
+      // Reject curvy strokes (e.g. circles) that only simplify to a polygon
+      // at a coarse epsilon: the stroke must hug the polygon's edges.
+      if (_averageDistanceToPolygon(offsets, vertices) > diagonal * 0.04) {
+        continue;
       }
+
+      final v = _snapVertices(vertices);
+      return (v.length == 3 ? 'triangle' : 'rectangle', [...v, v.first]);
     }
 
     return null;
@@ -104,25 +189,76 @@ class ShapeDetector {
     return (pt - proj).distance;
   }
 
-  static List<Offset> _snapTriangleVertices(List<Offset> v) {
-    final res = List<Offset>.from(v);
-    for (int i = 0; i < 3; i++) {
-      final next = (i + 1) % 3;
-      final p1 = res[i];
-      final p2 = res[next];
-      // Snap nearly horizontal edge
-      if ((p1.dy - p2.dy).abs() < 12) {
-        final avgY = (p1.dy + p2.dy) / 2;
-        res[i] = Offset(p1.dx, avgY);
-        res[next] = Offset(p2.dx, avgY);
+  static double _segmentDistance(Offset pt, Offset a, Offset b) {
+    final ab = b - a;
+    final lenSq = ab.dx * ab.dx + ab.dy * ab.dy;
+    if (lenSq == 0) return (pt - a).distance;
+    final t = (((pt.dx - a.dx) * ab.dx + (pt.dy - a.dy) * ab.dy) / lenSq)
+        .clamp(0.0, 1.0)
+        .toDouble();
+    return (pt - (a + ab * t)).distance;
+  }
+
+  static double _averageDistanceToPolygon(
+    List<Offset> pts,
+    List<Offset> vertices,
+  ) {
+    double total = 0;
+    for (final pt in pts) {
+      double best = double.infinity;
+      for (int i = 0; i < vertices.length; i++) {
+        final d = _segmentDistance(
+          pt,
+          vertices[i],
+          vertices[(i + 1) % vertices.length],
+        );
+        if (d < best) best = d;
       }
-      // Snap nearly vertical edge
-      if ((p1.dx - p2.dx).abs() < 12) {
-        final avgX = (p1.dx + p2.dx) / 2;
-        res[i] = Offset(avgX, p1.dy);
-        res[next] = Offset(avgX, p2.dy);
+      total += best;
+    }
+    return total / pts.length;
+  }
+
+  /// Aligns vertices whose x or y coordinates are nearly equal,
+  /// e.g. so a triangle's base is horizontal or a diamond is symmetric.
+  static List<Offset> _snapVertices(List<Offset> v) {
+    final res = List<Offset>.from(v);
+    for (int i = 0; i < res.length; i++) {
+      for (int j = i + 1; j < res.length; j++) {
+        final p1 = res[i];
+        final p2 = res[j];
+        if ((p1.dy - p2.dy).abs() < 12) {
+          final avgY = (p1.dy + p2.dy) / 2;
+          res[i] = Offset(res[i].dx, avgY);
+          res[j] = Offset(res[j].dx, avgY);
+        }
+        if ((p1.dx - p2.dx).abs() < 12) {
+          final avgX = (p1.dx + p2.dx) / 2;
+          res[i] = Offset(avgX, res[i].dy);
+          res[j] = Offset(avgX, res[j].dy);
+        }
       }
     }
     return res;
+  }
+
+  /// Whether every edge of the closed polygon [vertices]
+  /// is close to horizontal or vertical.
+  static bool _isAxisAligned(List<Offset> vertices) {
+    const tolerance = 12 * pi / 180;
+    for (int i = 0; i < vertices.length - 1; i++) {
+      final d = vertices[i + 1] - vertices[i];
+      final angle = atan2(d.dy.abs(), d.dx.abs());
+      if (angle > tolerance && angle < pi / 2 - tolerance) return false;
+    }
+    return true;
+  }
+
+  static Rect _boundingRect(List<Offset> vertices) {
+    var rect = Rect.fromPoints(vertices.first, vertices.first);
+    for (final v in vertices) {
+      rect = rect.expandToInclude(Rect.fromPoints(v, v));
+    }
+    return rect;
   }
 }

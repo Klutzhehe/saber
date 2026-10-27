@@ -164,6 +164,22 @@ class CanvasPainter extends CustomPainter {
     }
 
     final color = currentStroke!.color.withInversion(invert);
+
+    // A stroke snapped to a shape while the pen is still held down
+    if (currentStroke case final CircleStroke stroke) {
+      canvas.drawCircle(stroke.center, stroke.radius, _shapePaint(stroke, color));
+      return;
+    } else if (currentStroke case final RectangleStroke stroke) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          stroke.rect,
+          Radius.circular(stroke.options.size / 4),
+        ),
+        _shapePaint(stroke, color),
+      );
+      return;
+    }
+
     final paint = Paint();
 
     paint.color = color;
@@ -181,6 +197,11 @@ class CanvasPainter extends CustomPainter {
     // Current stroke always uses high quality
     canvas.drawPath(currentStroke!.highQualityPath, paint);
   }
+
+  static Paint _shapePaint(Stroke stroke, Color color) => Paint()
+    ..color = color
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = stroke.options.size;
 
   void _drawLaserStroke(Canvas canvas, LaserStroke stroke) {
     canvas.drawPath(

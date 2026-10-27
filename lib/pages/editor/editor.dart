@@ -14,11 +14,9 @@ import 'package:flutter_quill/flutter_quill.dart' as flutter_quill;
 import 'package:keybinder/keybinder.dart';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
-import 'package:one_dollar_unistroke_recognizer/one_dollar_unistroke_recognizer.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:perfect_freehand/perfect_freehand.dart';
 import 'package:saber/components/canvas/_asset_cache.dart';
-import 'package:saber/components/canvas/_circle_stroke.dart';
 import 'package:saber/components/canvas/_rectangle_stroke.dart';
 import 'package:saber/components/canvas/_stroke.dart';
 import 'package:saber/components/canvas/canvas.dart';
@@ -249,6 +247,93 @@ class EditorState extends State<Editor> {
     _holdToEraseStartPagePosition = pagePosition;
 
     _holdToEraseTimer = Timer(_holdToEraseDuration, _triggerHoldToErase);
+  }
+
+  /// Timer that converts the current pen stroke into a shape
+  /// when the pen is held still at the end of the stroke.
+  Timer? _holdToShapeTimer;
+
+  /// Screen focal point the pen must stay near for [_holdToShapeTimer] to fire.
+  Offset? _holdToShapeAnchor;
+
+  /// Last observed focal point on the screen during the current stroke.
+  Offset? _holdToShapeLastFocalPoint;
+
+  /// Total distance drawn on screen (in screen logical pixels) in the current stroke.
+  double _holdToShapeDrawnLength = 0.0;
+
+  /// Whether the current stroke has been converted into a shape.
+  /// Once true, further pen movement is ignored until the pen is lifted.
+  bool _isHoldToShapeSnapped = false;
+
+  /// Strokes shorter than this (in screen logical pixels) are never converted,
+  /// which also keeps hold-to-shape from competing with hold-to-erase.
+  static const double _holdToShapeMinDrawnLength = 40.0;
+
+  /// Movement (in screen logical pixels) tolerated while holding still.
+  static const double _holdToShapeSlopDistance = 6.0;
+
+  /// How long the pen must be held still to convert the stroke into a shape.
+  static const _holdToShapeDuration = Duration(milliseconds: 500);
+
+  bool get _isHoldToShapeEnabled =>
+      currentTool is ShapePen ||
+      (currentTool is Pen && stows.autoDetectShapes.value);
+
+  void _resetHoldToShape() {
+    _holdToShapeTimer?.cancel();
+    _holdToShapeTimer = null;
+    _holdToShapeAnchor = null;
+    _holdToShapeLastFocalPoint = null;
+    _holdToShapeDrawnLength = 0.0;
+    _isHoldToShapeSnapped = false;
+  }
+
+  void _updateHoldToShape(Offset focalPoint) {
+    if (_isHoldToShapeSnapped || !_isHoldToShapeEnabled) return;
+
+    if (_holdToShapeLastFocalPoint != null) {
+      _holdToShapeDrawnLength +=
+          (focalPoint - _holdToShapeLastFocalPoint!).distance;
+    }
+    _holdToShapeLastFocalPoint = focalPoint;
+    if (_holdToShapeDrawnLength < _holdToShapeMinDrawnLength) return;
+
+    // Restart the timer whenever the pen moves away from where it was resting
+    if (_holdToShapeTimer == null ||
+        _holdToShapeAnchor == null ||
+        (focalPoint - _holdToShapeAnchor!).distance > _holdToShapeSlopDistance) {
+      _holdToShapeAnchor = focalPoint;
+      _holdToShapeTimer?.cancel();
+      _holdToShapeTimer = Timer(_holdToShapeDuration, _triggerHoldToShape);
+    }
+  }
+
+  void _triggerHoldToShape() {
+    _holdToShapeTimer = null;
+    if (!mounted || dragPageIndex == null) return;
+    if (_isHoldToShapeSnapped || !_isHoldToShapeEnabled) return;
+
+    final rawStroke = Pen.currentStroke;
+    if (rawStroke == null || rawStroke.isEmpty) return;
+
+    final completeStroke = rawStroke.copy()
+      ..options.isComplete = true
+      ..markPolygonNeedsUpdating();
+    final shape = currentTool is ShapePen
+        ? ShapePen.recognize(completeStroke)
+        : ShapeDetector.recognize(completeStroke);
+    if (shape == null) return;
+
+    _isHoldToShapeSnapped = true;
+    Pen.currentStroke = shape;
+    ShapePen.cancelDetection();
+    HapticFeedback.lightImpact();
+
+    if (dragPageIndex! < coreInfo.pages.length) {
+      coreInfo.pages[dragPageIndex!].redrawStrokes();
+    }
+    setState(() {});
   }
 
   void _triggerHoldToErase() {
@@ -679,10 +764,12 @@ class EditorState extends State<Editor> {
       // was a zoom gesture, ignore
       lastSeenPointerCount = lastSeenPointerCount;
       _cancelHoldToEraseTimer();
+      _resetHoldToShape();
       return false;
     } else if (details.pointerCount >= 2) {
       // is a zoom gesture, remove accidental stroke
       _cancelHoldToEraseTimer();
+      _resetHoldToShape();
       if (lastSeenPointerCount == 1 &&
           stows.editorFingerDrawing.value &&
           (currentTool is Pen || currentTool is Eraser)) {
@@ -714,6 +801,7 @@ class EditorState extends State<Editor> {
 
   void onDrawStart(ScaleStartDetails details) {
     _cancelHoldToEraseTimer();
+    _resetHoldToShape();
     _isHoldToEraseActive = false;
     _toolBeforeHoldToErase = null;
 
@@ -876,8 +964,12 @@ class EditorState extends State<Editor> {
     final offset = position - previousPosition;
 
     if (currentTool is Pen) {
-      (currentTool as Pen).onDragUpdate(position, currentPressure);
-      page.redrawStrokes();
+      // Once snapped to a shape, the shape stays put until the pen is lifted
+      if (!_isHoldToShapeSnapped) {
+        (currentTool as Pen).onDragUpdate(position, currentPressure);
+        page.redrawStrokes();
+        _updateHoldToShape(details.focalPoint);
+      }
     } else if (currentTool is Eraser) {
       for (final stroke in (currentTool as Eraser).checkForOverlappingStrokes(
         position,
@@ -935,82 +1027,33 @@ class EditorState extends State<Editor> {
 
   void onDrawEnd(ScaleEndDetails details) {
     _cancelHoldToEraseTimer();
+    final wasHoldToShapeSnapped = _isHoldToShapeSnapped;
+    _resetHoldToShape();
 
     final page = coreInfo.pages[dragPageIndex!];
     bool shouldSave = true;
     setState(() {
       if (currentTool is Pen) {
-        var newStroke = (currentTool as Pen).onDragEnd();
-        if (newStroke == null) return;
-        if (newStroke.isEmpty) return;
-
-        if (currentTool is! ShapePen) {
-          if (stows.autoStraightenLines.value && newStroke.isStraightLine()) {
+        final Stroke? newStroke;
+        if (wasHoldToShapeSnapped) {
+          // Already converted to a shape by holding still
+          newStroke = Pen.currentStroke;
+          Pen.currentStroke = null;
+          ShapePen.cancelDetection();
+        } else {
+          newStroke = (currentTool as Pen).onDragEnd();
+          // Shapes are only recognized when the pen is held still (see
+          // [_triggerHoldToShape]), so handwriting isn't mistaken for shapes.
+          // ShapePen still recognizes shapes on release in [ShapePen.onDragEnd].
+          if (newStroke != null &&
+              currentTool is! ShapePen &&
+              stows.autoStraightenLines.value &&
+              newStroke.isStraightLine()) {
             newStroke.convertToLine();
-          } else if (stows.autoDetectShapes.value) {
-            final geom = ShapeDetector.analyzeClosedStroke(newStroke.points);
-            if (geom != null && geom.$1 == 'triangle') {
-              newStroke = Stroke(
-                color: (currentTool as Pen).color,
-                pressureEnabled: (currentTool as Pen).pressureEnabled,
-                options: newStroke.options.copyWith(isComplete: true),
-                pageIndex: newStroke.pageIndex,
-                page: newStroke.page,
-                toolId: newStroke.toolId,
-              )..addPoints(geom.$2);
-            } else {
-              final detected = newStroke.detectShape();
-              if (detected != null && detected.score >= 0.65) {
-                if (detected.name == DefaultUnistrokeNames.rectangle) {
-                  if (geom != null && geom.$1 == 'triangle') {
-                    newStroke = Stroke(
-                      color: (currentTool as Pen).color,
-                      pressureEnabled: (currentTool as Pen).pressureEnabled,
-                      options: newStroke.options.copyWith(isComplete: true),
-                      pageIndex: newStroke.pageIndex,
-                      page: newStroke.page,
-                      toolId: newStroke.toolId,
-                    )..addPoints(geom.$2);
-                  } else {
-                    final rect = detected.convertToRect();
-                    newStroke = RectangleStroke(
-                      color: (currentTool as Pen).color,
-                      pressureEnabled: (currentTool as Pen).pressureEnabled,
-                      options: newStroke.options,
-                      pageIndex: newStroke.pageIndex,
-                      page: newStroke.page,
-                      toolId: newStroke.toolId,
-                      rect: rect,
-                    );
-                  }
-                } else if (detected.name == DefaultUnistrokeNames.circle) {
-                  final (center, radius) = detected.convertToCircle();
-                  newStroke = CircleStroke(
-                    color: (currentTool as Pen).color,
-                    pressureEnabled: (currentTool as Pen).pressureEnabled,
-                    options: newStroke.options,
-                    pageIndex: newStroke.pageIndex,
-                    page: newStroke.page,
-                    toolId: newStroke.toolId,
-                    radius: radius,
-                    center: center,
-                  );
-                } else if (detected.name == DefaultUnistrokeNames.triangle) {
-                  final polygon =
-                      geom?.$2 ?? detected.convertToCanonicalPolygon();
-                  newStroke = Stroke(
-                    color: (currentTool as Pen).color,
-                    pressureEnabled: (currentTool as Pen).pressureEnabled,
-                    options: newStroke.options.copyWith(isComplete: true),
-                    pageIndex: newStroke.pageIndex,
-                    page: newStroke.page,
-                    toolId: newStroke.toolId,
-                  )..addPoints(polygon);
-                }
-              }
-            }
           }
         }
+        if (newStroke == null) return;
+        if (newStroke.isEmpty) return;
 
         createPage(newStroke.pageIndex);
         page.insertStroke(newStroke);
@@ -1180,6 +1223,9 @@ class EditorState extends State<Editor> {
 
   void onInteractionEnd(ScaleEndDetails details) {
     _cancelHoldToEraseTimer();
+    // Called before [onDrawEnd], which still needs [_isHoldToShapeSnapped]
+    _holdToShapeTimer?.cancel();
+    _holdToShapeTimer = null;
     if (_isHoldToEraseActive) {
       _isHoldToEraseActive = false;
       if (currentTool is Eraser && _toolBeforeHoldToErase != null) {
@@ -2727,6 +2773,7 @@ class EditorState extends State<Editor> {
     _watchServerTimer?.cancel();
     _lastSeenPointerCountTimer?.cancel();
     _cancelHoldToEraseTimer();
+    _holdToShapeTimer?.cancel();
 
     _removeKeybindings();
 
