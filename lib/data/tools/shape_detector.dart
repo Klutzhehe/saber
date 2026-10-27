@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:one_dollar_unistroke_recognizer/one_dollar_unistroke_recognizer.dart';
 import 'package:perfect_freehand/perfect_freehand.dart';
 import 'package:saber/components/canvas/_circle_stroke.dart';
+import 'package:saber/components/canvas/_polygon_stroke.dart';
 import 'package:saber/components/canvas/_rectangle_stroke.dart';
 import 'package:saber/components/canvas/_stroke.dart';
 
@@ -77,10 +78,9 @@ class ShapeDetector {
     }
   }
 
-  /// Builds a polygon stroke with a constant width and no smoothing,
-  /// pressure simulation or tapers, so the edges render as solid lines.
-  static Stroke polygonStroke(Stroke source, List<Offset> vertices) {
-    return Stroke(
+  /// Builds a polygon stroke whose edges render as solid, constant-width lines.
+  static PolygonStroke polygonStroke(Stroke source, List<Offset> vertices) {
+    return PolygonStroke(
       color: source.color,
       pressureEnabled: false,
       options: StrokeOptions(

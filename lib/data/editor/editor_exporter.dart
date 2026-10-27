@@ -9,6 +9,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:pool/pool.dart';
 import 'package:saber/components/canvas/_circle_stroke.dart';
+import 'package:saber/components/canvas/_polygon_stroke.dart';
 import 'package:saber/components/canvas/_rectangle_stroke.dart';
 import 'package:saber/components/canvas/_stroke.dart';
 import 'package:saber/components/canvas/canvas_preview.dart';
@@ -117,6 +118,9 @@ abstract class EditorExporter {
                         strokeSize / 4,
                         strokeSize / 4,
                       );
+                    } else if (stroke is PolygonStroke) {
+                      shouldFillShape = false;
+                      pdfGraphics.drawShape(stroke.toSvgPath());
                     } else {
                       shouldFillShape = true;
                       pdfGraphics.drawShape(stroke.toSvgPath());

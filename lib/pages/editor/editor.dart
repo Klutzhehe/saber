@@ -17,6 +17,7 @@ import 'package:path/path.dart' as p;
 import 'package:pdfrx/pdfrx.dart';
 import 'package:perfect_freehand/perfect_freehand.dart';
 import 'package:saber/components/canvas/_asset_cache.dart';
+import 'package:saber/components/canvas/_polygon_stroke.dart';
 import 'package:saber/components/canvas/_rectangle_stroke.dart';
 import 'package:saber/components/canvas/_stroke.dart';
 import 'package:saber/components/canvas/canvas.dart';
@@ -1198,7 +1199,7 @@ class EditorState extends State<Editor> {
       streamline: 0,
     );
 
-    final stroke = Stroke(
+    final stroke = PolygonStroke(
       color: strokeColor,
       pressureEnabled: false,
       options: strokeOptions,

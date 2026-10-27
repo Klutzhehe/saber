@@ -7,6 +7,7 @@ import 'package:logging/logging.dart';
 import 'package:one_dollar_unistroke_recognizer/one_dollar_unistroke_recognizer.dart';
 import 'package:perfect_freehand/perfect_freehand.dart';
 import 'package:saber/components/canvas/_circle_stroke.dart';
+import 'package:saber/components/canvas/_polygon_stroke.dart';
 import 'package:saber/components/canvas/_rectangle_stroke.dart';
 import 'package:saber/data/extensions/list_extensions.dart';
 import 'package:saber/data/extensions/point_extensions.dart';
@@ -80,6 +81,7 @@ class Stroke {
     assert(json['i'] == pageIndex || json['i'] == null);
     switch (json['shape'] as String?) {
       case null:
+      case 'polygon':
         break;
       case 'circle':
         return CircleStroke.fromJson(
@@ -141,14 +143,24 @@ class Stroke {
       );
     }
 
-    return Stroke(
-      color: color,
-      pressureEnabled: pressureEnabled,
-      options: options,
-      pageIndex: pageIndex,
-      page: page,
-      toolId: toolId,
-    )..points.addAll(points);
+    final stroke = json['shape'] == 'polygon'
+        ? PolygonStroke(
+            color: color,
+            pressureEnabled: pressureEnabled,
+            options: options,
+            pageIndex: pageIndex,
+            page: page,
+            toolId: toolId,
+          )
+        : Stroke(
+            color: color,
+            pressureEnabled: pressureEnabled,
+            options: options,
+            pageIndex: pageIndex,
+            page: page,
+            toolId: toolId,
+          );
+    return stroke..points.addAll(points);
   }
   Map<String, dynamic> toJson() {
     // these json keys should not be the same as the ones in [StrokeOptions.toJson]

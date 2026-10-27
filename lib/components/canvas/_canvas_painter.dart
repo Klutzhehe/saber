@@ -6,6 +6,7 @@ import 'package:one_dollar_unistroke_recognizer/one_dollar_unistroke_recognizer.
 import 'package:path_drawing/path_drawing.dart';
 import 'package:perfect_freehand/perfect_freehand.dart';
 import 'package:saber/components/canvas/_circle_stroke.dart';
+import 'package:saber/components/canvas/_polygon_stroke.dart';
 import 'package:saber/components/canvas/_rectangle_stroke.dart';
 import 'package:saber/components/canvas/_stroke.dart';
 import 'package:saber/data/editor/page.dart';
@@ -140,7 +141,9 @@ class CanvasPainter extends CustomPainter {
       late final shapePaint = Paint()
         ..color = paint.color
         ..style = .stroke
-        ..strokeWidth = stroke.options.size;
+        ..strokeWidth = stroke.options.size
+        ..strokeJoin = .round
+        ..strokeCap = .round;
 
       if (stroke is CircleStroke) {
         canvas.drawCircle(stroke.center, stroke.radius, shapePaint);
@@ -150,6 +153,8 @@ class CanvasPainter extends CustomPainter {
           RRect.fromRectAndRadius(stroke.rect, Radius.circular(strokeSize / 4)),
           shapePaint,
         );
+      } else if (stroke is PolygonStroke) {
+        canvas.drawPath(stroke.outlinePath, shapePaint);
       } else {
         canvas.drawPath(_selectPath(stroke), paint);
       }
@@ -178,6 +183,9 @@ class CanvasPainter extends CustomPainter {
         _shapePaint(stroke, color),
       );
       return;
+    } else if (currentStroke case final PolygonStroke stroke) {
+      canvas.drawPath(stroke.outlinePath, _shapePaint(stroke, color));
+      return;
     }
 
     final paint = Paint();
@@ -201,7 +209,9 @@ class CanvasPainter extends CustomPainter {
   static Paint _shapePaint(Stroke stroke, Color color) => Paint()
     ..color = color
     ..style = PaintingStyle.stroke
-    ..strokeWidth = stroke.options.size;
+    ..strokeWidth = stroke.options.size
+    ..strokeJoin = StrokeJoin.round
+    ..strokeCap = StrokeCap.round;
 
   void _drawLaserStroke(Canvas canvas, LaserStroke stroke) {
     canvas.drawPath(
